@@ -245,11 +245,17 @@ func (r *MemoryRepo) ArchiveAndCreate(ctx context.Context, archiveID, superseded
 }
 
 func (r *MemoryRepo) SetState(ctx context.Context, id string, state domain.MemoryState) error {
-	_, err := r.db.ExecContext(ctx,
+	result, err := r.db.ExecContext(ctx,
 		`UPDATE memories SET state = ?, updated_at = NOW() WHERE id = ?`,
 		string(state), id,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 func (r *MemoryRepo) List(ctx context.Context, f domain.MemoryFilter) ([]domain.Memory, int, error) {

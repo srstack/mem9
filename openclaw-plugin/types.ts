@@ -38,7 +38,7 @@ export interface EmbedConfig {
 export interface Memory {
   id: string;
   content: string;
-  key?: string | null;
+  key?: string | null;  // direct-mode only — server mode ignores this field
   source?: string | null;
   tags?: string[] | null;
   metadata?: Record<string, unknown> | null;
@@ -64,7 +64,7 @@ export interface SearchResult {
 
 export interface CreateMemoryInput {
   content: string;
-  key?: string;
+  key?: string;    // direct-mode only — server mode ignores this field
   source?: string;
   tags?: string[];
   metadata?: Record<string, unknown>;
@@ -72,7 +72,7 @@ export interface CreateMemoryInput {
 
 export interface UpdateMemoryInput {
   content?: string;
-  key?: string;
+  key?: string;    // direct-mode only — server mode ignores this field
   source?: string;
   tags?: string[];
   metadata?: Record<string, unknown>;

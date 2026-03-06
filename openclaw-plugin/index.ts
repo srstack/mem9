@@ -123,7 +123,7 @@ function buildTools(backend: MemoryBackend): AnyAgentTool[] {
       name: "memory_store",
       label: "Store Memory",
       description:
-        "Store a memory. If a key is provided and already exists, the memory is updated (upsert). Returns the stored memory with its assigned id.",
+        "Store a memory. If a key is provided and already exists, the memory is updated (upsert). Key-based upsert is only available in direct mode; server mode ignores the key field. Returns the stored memory with its assigned id.",
       parameters: {
         type: "object",
         properties: {
@@ -133,7 +133,7 @@ function buildTools(backend: MemoryBackend): AnyAgentTool[] {
           },
           key: {
             type: "string",
-            description: "Optional named key for upsert-style lookup",
+            description: "Optional named key for upsert-style lookup (direct-mode only — server mode ignores this)",
           },
           source: {
             type: "string",
@@ -180,7 +180,7 @@ function buildTools(backend: MemoryBackend): AnyAgentTool[] {
             description: "Comma-separated tags to filter by (AND)",
           },
           source: { type: "string", description: "Filter by source agent" },
-          key: { type: "string", description: "Filter by key name" },
+          key: { type: "string", description: "Filter by key name (direct-mode only)" },
           limit: {
             type: "number",
             description: "Max results (default 20, max 200)",
@@ -240,7 +240,7 @@ function buildTools(backend: MemoryBackend): AnyAgentTool[] {
         properties: {
           id: { type: "string", description: "Memory id to update" },
           content: { type: "string", description: "New content" },
-          key: { type: "string", description: "New key name" },
+          key: { type: "string", description: "New key name (direct-mode only)" },
           source: { type: "string", description: "New source" },
           tags: {
             type: "array",

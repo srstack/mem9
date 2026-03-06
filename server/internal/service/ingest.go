@@ -113,7 +113,11 @@ func (s *IngestService) Ingest(ctx context.Context, agentName string, req Ingest
 		digestID, digestErr := s.generateDigest(ctx, agentName, req.AgentID, req.SessionID, formatted)
 		if digestErr != nil {
 			slog.Error("digest generation failed", "err", digestErr)
-			result.Status = "partial"
+			if mode == ModeDigest {
+				result.Status = "failed"
+			} else {
+				result.Status = "partial"
+			}
 		} else if digestID != "" {
 			result.DigestStored = true
 			result.DigestID = digestID
@@ -583,6 +587,9 @@ func (s *IngestService) fetchExistingForReconcile(ctx context.Context, facts []s
 			if _, ok := seen[m.ID]; !ok {
 				seen[m.ID] = struct{}{}
 				result = append(result, m)
+				if len(result) >= reconcileMemoryCap {
+					return result, nil
+				}
 			}
 		}
 	}

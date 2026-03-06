@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -62,12 +63,18 @@ type tenantSvcKey string
 // resolveServices returns the correct services for a request.
 func (s *Server) resolveServices(auth *domain.AuthInfo) resolvedSvc {
 	if auth.TenantID == "" {
-		// Non-tenant mode: no caching — build services directly.
+		// Non-tenant mode: cache by DB pointer to avoid per-request NewMemoryRepo.
+		key := tenantSvcKey(fmt.Sprintf("db-%p", auth.TenantDB))
+		if cached, ok := s.svcCache.Load(key); ok {
+			return cached.(resolvedSvc)
+		}
 		memRepo := tidb.NewMemoryRepo(auth.TenantDB, s.autoModel)
-		return resolvedSvc{
+		svc := resolvedSvc{
 			memory: service.NewMemoryService(memRepo, s.embedder, s.autoModel, memRepo.FTSAvailable()),
 			ingest: service.NewIngestService(memRepo, s.llmClient, s.embedder, s.autoModel, s.ingestMode),
 		}
+		s.svcCache.Store(key, svc)
+		return svc
 	}
 	key := tenantSvcKey(auth.TenantID)
 	if cached, ok := s.svcCache.Load(key); ok {

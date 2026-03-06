@@ -35,6 +35,7 @@ const MAX_INGEST_MESSAGES = 20; // absolute cap even if small messages
 interface CacheEntry {
   memories: Memory[];
   ts: number;
+  queryHash: string;
 }
 
 /** Minimal logger — matches OpenClaw's PluginLogger shape. */
@@ -195,17 +196,18 @@ export function registerHooks(
   // Cache scoped to this plugin instance.
   let memoryCache: CacheEntry | null = null;
 
-  function getCached(): Memory[] | null {
+  function getCached(prompt: string): Memory[] | null {
     if (!memoryCache) return null;
     if (Date.now() - memoryCache.ts > CACHE_TTL_MS) {
       memoryCache = null;
       return null;
     }
+    if (memoryCache.queryHash !== prompt.slice(0, 100)) return null;
     return memoryCache.memories;
   }
 
-  function setCache(memories: Memory[]): void {
-    memoryCache = { memories, ts: Date.now() };
+  function setCache(memories: Memory[], prompt: string): void {
+    memoryCache = { memories, ts: Date.now(), queryHash: prompt.slice(0, 100) };
   }
 
   function invalidateCache(): void {
@@ -224,11 +226,11 @@ export function registerHooks(
         if (!prompt || prompt.length < MIN_PROMPT_LEN) return;
 
         // Check cache first — avoid querying DB on every turn
-        let memories = getCached();
+        let memories = getCached(prompt);
         if (!memories) {
           const result = await backend.search({ q: prompt, limit: MAX_INJECT });
           memories = result.data ?? [];
-          setCache(memories);
+          setCache(memories, prompt);
         }
 
         if (memories.length === 0) return;
