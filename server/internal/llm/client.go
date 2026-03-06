@@ -56,10 +56,15 @@ type Message struct {
 	Content string `json:"content"`
 }
 
+type responseFormat struct {
+	Type string `json:"type"`
+}
+
 type chatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature float64   `json:"temperature"`
+	Model          string          `json:"model"`
+	Messages       []Message       `json:"messages"`
+	Temperature    float64         `json:"temperature"`
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 }
 
 type chatResponse struct {
@@ -73,16 +78,30 @@ type chatResponse struct {
 	} `json:"error,omitempty"`
 }
 
+// Complete sends a chat completion request to the LLM.
 func (c *Client) Complete(ctx context.Context, system, user string) (string, error) {
+	return c.complete(ctx, system, user, nil)
+}
+
+// CompleteJSON sends a chat completion request with response_format: json_object.
+// This instructs the model to return valid JSON, improving reliability with
+// non-OpenAI providers (Ollama, vLLM, etc.) that may otherwise wrap JSON in
+// markdown fences or explanatory text.
+func (c *Client) CompleteJSON(ctx context.Context, system, user string) (string, error) {
+	return c.complete(ctx, system, user, &responseFormat{Type: "json_object"})
+}
+
+func (c *Client) complete(ctx context.Context, system, user string, respFmt *responseFormat) (string, error) {
 	messages := []Message{
 		{Role: "system", Content: system},
 		{Role: "user", Content: user},
 	}
 
 	body, err := json.Marshal(chatRequest{
-		Model:       c.model,
-		Messages:    messages,
-		Temperature: c.temperature,
+		Model:          c.model,
+		Messages:       messages,
+		Temperature:    c.temperature,
+		ResponseFormat: respFmt,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)

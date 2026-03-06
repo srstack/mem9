@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -109,9 +110,40 @@ func (s *IngestService) Ingest(ctx context.Context, agentName string, req Ingest
 
 	result := &IngestResult{Status: "complete"}
 
-	// Phase 1b: Generate session digest.
-	if mode == ModeSmart || mode == ModeDigest {
-		digestID, digestErr := s.generateDigest(ctx, agentName, req.AgentID, req.SessionID, formatted)
+	wantDigest := mode == ModeSmart || mode == ModeDigest
+	wantExtract := mode == ModeSmart || mode == ModeExtract
+
+	// When both digest and extract are needed, run them concurrently.
+	// They are independent: digest summarizes the conversation, extract
+	// pulls atomic facts — neither needs the other's output.
+	var (
+		digestID   string
+		digestErr  error
+		insightIDs []string
+		warnings   int
+		extractErr error
+	)
+
+	if wantDigest && wantExtract {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			digestID, digestErr = s.generateDigest(ctx, agentName, req.AgentID, req.SessionID, formatted)
+		}()
+		go func() {
+			defer wg.Done()
+			insightIDs, warnings, extractErr = s.extractAndReconcile(ctx, agentName, req.AgentID, req.SessionID, formatted)
+		}()
+		wg.Wait()
+	} else if wantDigest {
+		digestID, digestErr = s.generateDigest(ctx, agentName, req.AgentID, req.SessionID, formatted)
+	} else if wantExtract {
+		insightIDs, warnings, extractErr = s.extractAndReconcile(ctx, agentName, req.AgentID, req.SessionID, formatted)
+	}
+
+	// Collect digest results.
+	if wantDigest {
 		if digestErr != nil {
 			slog.Error("digest generation failed", "err", digestErr)
 			if mode == ModeDigest {
@@ -125,9 +157,8 @@ func (s *IngestService) Ingest(ctx context.Context, agentName string, req Ingest
 		}
 	}
 
-	// Phase 1a + Phase 2: Extract insights and reconcile.
-	if mode == ModeSmart || mode == ModeExtract {
-		insightIDs, warnings, extractErr := s.extractAndReconcile(ctx, agentName, req.AgentID, req.SessionID, formatted)
+	// Collect extract+reconcile results.
+	if wantExtract {
 		if extractErr != nil {
 			slog.Error("insight extraction failed", "err", extractErr)
 			if result.DigestStored {
@@ -210,7 +241,7 @@ Return ONLY valid JSON. No markdown fences.
 
 	userPrompt := fmt.Sprintf("Summarize this conversation. Today's date is %s.\n\n%s", currentDate, conversation)
 
-	raw, err := s.llm.Complete(ctx, systemPrompt, userPrompt)
+	raw, err := s.llm.CompleteJSON(ctx, systemPrompt, userPrompt)
 	if err != nil {
 		return "", fmt.Errorf("digest LLM call: %w", err)
 	}
@@ -221,7 +252,7 @@ Return ONLY valid JSON. No markdown fences.
 	parsed, err := llm.ParseJSON[digestResponse](raw)
 	if err != nil {
 		// Retry once with stricter prompt.
-		raw2, retryErr := s.llm.Complete(ctx, systemPrompt,
+		raw2, retryErr := s.llm.CompleteJSON(ctx, systemPrompt,
 			"Your previous response was not valid JSON. Return ONLY the JSON object.\n\n"+userPrompt)
 		if retryErr != nil {
 			return "", fmt.Errorf("digest retry: %w", retryErr)
@@ -306,7 +337,7 @@ Return ONLY valid JSON. No markdown fences, no explanation.
 
 	userPrompt := fmt.Sprintf("Extract facts from this conversation. Today's date is %s.\n\n%s", currentDate, conversation)
 
-	raw, err := s.llm.Complete(ctx, systemPrompt, userPrompt)
+	raw, err := s.llm.CompleteJSON(ctx, systemPrompt, userPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("extraction LLM call: %w", err)
 	}
@@ -317,7 +348,7 @@ Return ONLY valid JSON. No markdown fences, no explanation.
 	parsed, err := llm.ParseJSON[extractResponse](raw)
 	if err != nil {
 		// Retry once.
-		raw2, retryErr := s.llm.Complete(ctx, systemPrompt,
+		raw2, retryErr := s.llm.CompleteJSON(ctx, systemPrompt,
 			"Your previous response was not valid JSON. Return ONLY the JSON object.\n\n"+userPrompt)
 		if retryErr != nil {
 			return nil, fmt.Errorf("extraction retry: %w", retryErr)
@@ -341,8 +372,8 @@ Return ONLY valid JSON. No markdown fences, no explanation.
 
 // reconcile takes extracted facts and reconciles them against existing memories.
 func (s *IngestService) reconcile(ctx context.Context, agentName, agentID, sessionID string, facts []string) ([]string, int, error) {
-	// Fetch existing active insights + pinned memories for context.
-	existingMemories, err := s.fetchExistingForReconcile(ctx, facts)
+	// Fetch existing active insights (scoped to this agent) + all pinned memories for context.
+	existingMemories, err := s.fetchExistingForReconcile(ctx, agentID, facts)
 	if err != nil {
 		slog.Warn("failed to fetch existing memories for reconciliation, proceeding with ADD-all", "err", err)
 		return s.addAllFacts(ctx, agentName, agentID, sessionID, facts)
@@ -380,14 +411,15 @@ newly extracted facts against existing memories and deciding the correct action 
 - **DELETE**: The fact directly contradicts an existing memory, making it obsolete.
 - **NOOP**: The fact is already captured by an existing memory. No action needed.
 
-	## Rules
+## Rules
 
 1. Reference existing memories by their integer ID ONLY (0, 1, 2...). Never invent IDs.
 2. For UPDATE, always include the original text in "old_memory" for audit.
-3. For ADD, generate the next sequential integer ID.
-4. When in doubt between UPDATE and NOOP, prefer ADD (never lose information — slight duplication is better than missing a new detail).
-5. When in doubt between ADD and UPDATE, prefer UPDATE if an existing memory covers a related topic.
-6. Preserve the language of the original facts. Do not translate.
+3. For ADD, the "id" field is ignored by the system — use any value.
+4. When a new fact covers the same topic as an existing memory but adds detail or corrects it, prefer UPDATE.
+5. When a new fact is about a topic not covered by any existing memory, use ADD.
+6. When a new fact means the same thing as an existing memory (even if worded differently), use NOOP.
+7. Preserve the language of the original facts. Do not translate.
 
 ## Example
 
@@ -426,7 +458,7 @@ New facts extracted from recent conversation:
 
 Reconcile the new facts with current memory. Return the full memory state after reconciliation.`, string(refsJSON), string(factsJSON))
 
-	raw, err := s.llm.Complete(ctx, systemPrompt, userPrompt)
+	raw, err := s.llm.CompleteJSON(ctx, systemPrompt, userPrompt)
 	if err != nil {
 		slog.Warn("reconciliation LLM call failed, falling back to ADD-all", "err", err)
 		return s.addAllFacts(ctx, agentName, agentID, sessionID, facts)
@@ -445,7 +477,7 @@ Reconcile the new facts with current memory. Return the full memory state after 
 	parsed, err := llm.ParseJSON[reconcileResponse](raw)
 	if err != nil {
 		// Retry once.
-		raw2, retryErr := s.llm.Complete(ctx, systemPrompt,
+		raw2, retryErr := s.llm.CompleteJSON(ctx, systemPrompt,
 			"Your previous response was not valid JSON. Return ONLY the JSON object.\n\n"+userPrompt)
 		if retryErr != nil {
 			slog.Warn("reconciliation retry failed, falling back to ADD-all", "err", retryErr)
@@ -536,15 +568,19 @@ Reconcile the new facts with current memory. Return the full memory state after 
 	return resultIDs, warnings, nil
 }
 
-// fetchExistingForReconcile gets existing active insights and pinned memories for reconciliation.
-func (s *IngestService) fetchExistingForReconcile(ctx context.Context, facts []string) ([]domain.Memory, error) {
+// fetchExistingForReconcile gets existing memories for reconciliation.
+// Insights are scoped to the requesting agent (so agent A never mutates agent B's insights).
+// Pinned memories are space-level and always included (but protected from mutation by guards in reconcile).
+func (s *IngestService) fetchExistingForReconcile(ctx context.Context, agentID string, facts []string) ([]domain.Memory, error) {
 	const reconcileMemoryCap = 30
 	const reconcileContentMaxLen = 150
 
 	if s.embedder == nil && s.autoModel == "" {
+		// No vector search available — fall back to listing.
 		filter := domain.MemoryFilter{
 			State:      "active",
 			MemoryType: "insight,pinned",
+			AgentID:    agentID,
 			Limit:      reconcileMemoryCap,
 		}
 		memories, _, err := s.memories.List(ctx, filter)
@@ -552,9 +588,7 @@ func (s *IngestService) fetchExistingForReconcile(ctx context.Context, facts []s
 			return nil, err
 		}
 		for i := range memories {
-			if len(memories[i].Content) > reconcileContentMaxLen {
-				memories[i].Content = memories[i].Content[:reconcileContentMaxLen] + "..."
-			}
+			memories[i].Content = truncateRunes(memories[i].Content, reconcileContentMaxLen)
 		}
 		return memories, nil
 	}
@@ -562,37 +596,47 @@ func (s *IngestService) fetchExistingForReconcile(ctx context.Context, facts []s
 	seen := make(map[string]struct{})
 	var result []domain.Memory
 
-	filter := domain.MemoryFilter{
+	// Scope insights to this agent; pinned memories are always space-level.
+	insightFilter := domain.MemoryFilter{
 		State:      "active",
-		MemoryType: "insight,pinned",
+		MemoryType: "insight",
+		AgentID:    agentID,
+	}
+	pinnedFilter := domain.MemoryFilter{
+		State:      "active",
+		MemoryType: "pinned",
 	}
 
 	for _, fact := range facts {
-		var matches []domain.Memory
-		var err error
+		// Search agent-scoped insights and space-level pinned memories separately, then merge.
+		for _, filter := range []domain.MemoryFilter{insightFilter, pinnedFilter} {
+			var matches []domain.Memory
+			var err error
 
-		if s.autoModel != "" {
-			matches, err = s.memories.AutoVectorSearch(ctx, fact, filter, 10)
-		} else {
-			vec, embedErr := s.embedder.Embed(ctx, fact)
-			if embedErr != nil {
-				slog.Warn("embedding failed for fact during reconcile", "err", embedErr)
+			if s.autoModel != "" {
+				matches, err = s.memories.AutoVectorSearch(ctx, fact, filter, 10)
+			} else {
+				vec, embedErr := s.embedder.Embed(ctx, fact)
+				if embedErr != nil {
+					slog.Warn("embedding failed for fact during reconcile", "err", embedErr)
+					continue
+				}
+				matches, err = s.memories.VectorSearch(ctx, vec, filter, 10)
+			}
+
+			if err != nil {
+				slog.Warn("vector search failed for fact during reconcile", "err", err)
 				continue
 			}
-			matches, err = s.memories.VectorSearch(ctx, vec, filter, 10)
-		}
 
-		if err != nil {
-			slog.Warn("vector search failed for fact during reconcile", "err", err)
-			continue
-		}
-
-		for _, m := range matches {
-			if _, ok := seen[m.ID]; !ok {
-				seen[m.ID] = struct{}{}
-				result = append(result, m)
-				if len(result) >= reconcileMemoryCap {
-					return result, nil
+			for _, m := range matches {
+				if _, ok := seen[m.ID]; !ok {
+					seen[m.ID] = struct{}{}
+					m.Content = truncateRunes(m.Content, reconcileContentMaxLen)
+					result = append(result, m)
+					if len(result) >= reconcileMemoryCap {
+						return result, nil
+					}
 				}
 			}
 		}
@@ -741,4 +785,14 @@ func parseIntID(s string) int {
 		return -1
 	}
 	return id
+}
+
+// truncateRunes truncates s to at most maxRunes characters (not bytes),
+// appending "..." if truncation occurred. Safe for multi-byte UTF-8.
+func truncateRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
 }
