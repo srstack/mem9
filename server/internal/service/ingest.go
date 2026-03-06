@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/qiffang/mnemos/server/internal/domain"
@@ -108,7 +110,7 @@ func (s *IngestService) Ingest(ctx context.Context, agentName string, req Ingest
 
 	// Phase 1b: Generate session digest.
 	if mode == ModeSmart || mode == ModeDigest {
-		digestID, digestErr := s.generateDigest(ctx, agentName, req.SessionID, formatted)
+		digestID, digestErr := s.generateDigest(ctx, agentName, req.AgentID, req.SessionID, formatted)
 		if digestErr != nil {
 			slog.Error("digest generation failed", "err", digestErr)
 			result.Status = "partial"
@@ -120,13 +122,13 @@ func (s *IngestService) Ingest(ctx context.Context, agentName string, req Ingest
 
 	// Phase 1a + Phase 2: Extract insights and reconcile.
 	if mode == ModeSmart || mode == ModeExtract {
-		insightIDs, warnings, extractErr := s.extractAndReconcile(ctx, agentName, req.SessionID, formatted)
+		insightIDs, warnings, extractErr := s.extractAndReconcile(ctx, agentName, req.AgentID, req.SessionID, formatted)
 		if extractErr != nil {
 			slog.Error("insight extraction failed", "err", extractErr)
-			if result.Status == "partial" {
-				result.Status = "failed"
-			} else {
+			if result.DigestStored {
 				result.Status = "partial"
+			} else {
+				result.Status = "failed"
 			}
 		} else {
 			result.InsightsAdded = len(insightIDs)
@@ -140,14 +142,7 @@ func (s *IngestService) Ingest(ctx context.Context, agentName string, req Ingest
 
 // ingestRaw stores messages as a single raw memory (legacy behavior).
 func (s *IngestService) ingestRaw(ctx context.Context, agentName string, req IngestRequest) (*IngestResult, error) {
-	var sb strings.Builder
-	for _, msg := range req.Messages {
-		sb.WriteString(msg.Role)
-		sb.WriteString(": ")
-		sb.WriteString(msg.Content)
-		sb.WriteString("\n\n")
-	}
-	content := strings.TrimSpace(sb.String())
+	content := strings.TrimSpace(formatConversation(req.Messages))
 	if content == "" {
 		return &IngestResult{Status: "complete"}, nil
 	}
@@ -188,7 +183,7 @@ func (s *IngestService) ingestRaw(ctx context.Context, agentName string, req Ing
 }
 
 // generateDigest calls the LLM to generate a session summary and stores it.
-func (s *IngestService) generateDigest(ctx context.Context, agentName, sessionID, conversation string) (string, error) {
+func (s *IngestService) generateDigest(ctx context.Context, agentName, agentID, sessionID, conversation string) (string, error) {
 	currentDate := time.Now().Format("2006-01-02")
 
 	systemPrompt := `You are a technical session summarizer. Your task is to condense a conversation 
@@ -247,7 +242,7 @@ Return ONLY valid JSON. No markdown fences.
 		Content:    parsed.Summary,
 		MemoryType: domain.TypeDigest,
 		Source:     agentName,
-		AgentID:    agentName,
+		AgentID:    agentID,
 		SessionID:  sessionID,
 		Embedding:  embedding,
 		State:      domain.StateActive,
@@ -265,7 +260,7 @@ Return ONLY valid JSON. No markdown fences.
 }
 
 // extractAndReconcile runs Phase 1a (extraction) + Phase 2 (reconciliation).
-func (s *IngestService) extractAndReconcile(ctx context.Context, agentName, sessionID, conversation string) ([]string, int, error) {
+func (s *IngestService) extractAndReconcile(ctx context.Context, agentName, agentID, sessionID, conversation string) ([]string, int, error) {
 	// Phase 1a: Extract facts.
 	facts, err := s.extractFacts(ctx, conversation)
 	if err != nil {
@@ -276,7 +271,7 @@ func (s *IngestService) extractAndReconcile(ctx context.Context, agentName, sess
 	}
 
 	// Phase 2: Reconcile each fact against existing memories.
-	return s.reconcile(ctx, agentName, sessionID, facts)
+	return s.reconcile(ctx, agentName, agentID, sessionID, facts)
 }
 
 // extractFacts calls the LLM to extract atomic facts from the conversation.
@@ -340,17 +335,17 @@ Return ONLY valid JSON. No markdown fences, no explanation.
 }
 
 // reconcile takes extracted facts and reconciles them against existing memories.
-func (s *IngestService) reconcile(ctx context.Context, agentName, sessionID string, facts []string) ([]string, int, error) {
+func (s *IngestService) reconcile(ctx context.Context, agentName, agentID, sessionID string, facts []string) ([]string, int, error) {
 	// Fetch existing active insights + pinned memories for context.
 	existingMemories, err := s.fetchExistingForReconcile(ctx, facts)
 	if err != nil {
 		slog.Warn("failed to fetch existing memories for reconciliation, proceeding with ADD-all", "err", err)
-		return s.addAllFacts(ctx, agentName, sessionID, facts)
+		return s.addAllFacts(ctx, agentName, agentID, sessionID, facts)
 	}
 
 	if len(existingMemories) == 0 {
 		// No existing memories — add all facts directly.
-		return s.addAllFacts(ctx, agentName, sessionID, facts)
+		return s.addAllFacts(ctx, agentName, agentID, sessionID, facts)
 	}
 
 	// Build context for the reconciliation prompt using integer IDs.
@@ -429,7 +424,7 @@ Reconcile the new facts with current memory. Return the full memory state after 
 	raw, err := s.llm.Complete(ctx, systemPrompt, userPrompt)
 	if err != nil {
 		slog.Warn("reconciliation LLM call failed, falling back to ADD-all", "err", err)
-		return s.addAllFacts(ctx, agentName, sessionID, facts)
+		return s.addAllFacts(ctx, agentName, agentID, sessionID, facts)
 	}
 
 	type reconcileEvent struct {
@@ -449,12 +444,12 @@ Reconcile the new facts with current memory. Return the full memory state after 
 			"Your previous response was not valid JSON. Return ONLY the JSON object.\n\n"+userPrompt)
 		if retryErr != nil {
 			slog.Warn("reconciliation retry failed, falling back to ADD-all", "err", retryErr)
-			return s.addAllFacts(ctx, agentName, sessionID, facts)
+			return s.addAllFacts(ctx, agentName, agentID, sessionID, facts)
 		}
 		parsed, err = llm.ParseJSON[reconcileResponse](raw2)
 		if err != nil {
 			slog.Warn("reconciliation JSON parse failed after retry, falling back to ADD-all", "err", err)
-			return s.addAllFacts(ctx, agentName, sessionID, facts)
+			return s.addAllFacts(ctx, agentName, agentID, sessionID, facts)
 		}
 	}
 
@@ -468,7 +463,7 @@ Reconcile the new facts with current memory. Return the full memory state after 
 			if event.Text == "" {
 				continue
 			}
-			newID, addErr := s.addInsight(ctx, agentName, sessionID, event.Text)
+			newID, addErr := s.addInsight(ctx, agentName, agentID, sessionID, event.Text)
 			if addErr != nil {
 				slog.Warn("failed to add insight", "err", addErr, "text", event.Text)
 				warnings++
@@ -484,7 +479,19 @@ Reconcile the new facts with current memory. Return the full memory state after 
 				slog.Warn("skipping UPDATE with invalid ID", "id", event.ID)
 				continue
 			}
-			newID, updateErr := s.updateInsight(ctx, agentName, sessionID, realID, event.Text)
+			// Guard: never auto-update pinned memories — treat as ADD instead.
+			if intID >= 0 && intID < len(existingMemories) && existingMemories[intID].MemoryType == domain.TypePinned {
+				slog.Warn("skipping UPDATE for pinned memory — treating as ADD", "id", realID)
+				newID, addErr := s.addInsight(ctx, agentName, agentID, sessionID, event.Text)
+				if addErr != nil {
+					slog.Warn("failed to add insight (pinned fallback)", "err", addErr)
+					warnings++
+					continue
+				}
+				resultIDs = append(resultIDs, newID)
+				continue
+			}
+			newID, updateErr := s.updateInsight(ctx, agentName, agentID, sessionID, realID, event.Text)
 			if updateErr != nil {
 				slog.Warn("failed to update insight", "err", updateErr, "id", event.ID)
 				warnings++
@@ -497,6 +504,12 @@ Reconcile the new facts with current memory. Return the full memory state after 
 			realID, ok := idMap[intID]
 			if !ok {
 				slog.Warn("skipping DELETE with invalid ID", "id", event.ID)
+				continue
+			}
+			// Guard: never auto-delete pinned memories.
+			if intID >= 0 && intID < len(existingMemories) && existingMemories[intID].MemoryType == domain.TypePinned {
+				slog.Warn("skipping DELETE for pinned memory", "id", realID)
+				warnings++
 				continue
 			}
 			if delErr := s.memories.SetState(ctx, realID, domain.StateDeleted); delErr != nil {
@@ -517,14 +530,25 @@ Reconcile the new facts with current memory. Return the full memory state after 
 
 // fetchExistingForReconcile gets existing active insights and pinned memories for reconciliation.
 func (s *IngestService) fetchExistingForReconcile(ctx context.Context, facts []string) ([]domain.Memory, error) {
+	const reconcileMemoryCap = 30
+	const reconcileContentMaxLen = 150
+
 	if s.embedder == nil && s.autoModel == "" {
 		filter := domain.MemoryFilter{
 			State:      "active",
 			MemoryType: "insight,pinned",
-			Limit:      200,
+			Limit:      reconcileMemoryCap,
 		}
 		memories, _, err := s.memories.List(ctx, filter)
-		return memories, err
+		if err != nil {
+			return nil, err
+		}
+		for i := range memories {
+			if len(memories[i].Content) > reconcileContentMaxLen {
+				memories[i].Content = memories[i].Content[:reconcileContentMaxLen] + "..."
+			}
+		}
+		return memories, nil
 	}
 
 	seen := make(map[string]struct{})
@@ -567,11 +591,11 @@ func (s *IngestService) fetchExistingForReconcile(ctx context.Context, facts []s
 }
 
 // addAllFacts adds all facts as new insights (fallback when reconciliation fails).
-func (s *IngestService) addAllFacts(ctx context.Context, agentName, sessionID string, facts []string) ([]string, int, error) {
+func (s *IngestService) addAllFacts(ctx context.Context, agentName, agentID, sessionID string, facts []string) ([]string, int, error) {
 	var ids []string
 	var warnings int
 	for _, fact := range facts {
-		id, err := s.addInsight(ctx, agentName, sessionID, fact)
+		id, err := s.addInsight(ctx, agentName, agentID, sessionID, fact)
 		if err != nil {
 			slog.Warn("failed to add fact", "err", err, "fact", fact)
 			warnings++
@@ -583,7 +607,7 @@ func (s *IngestService) addAllFacts(ctx context.Context, agentName, sessionID st
 }
 
 // addInsight creates a new insight memory.
-func (s *IngestService) addInsight(ctx context.Context, agentName, sessionID, content string) (string, error) {
+func (s *IngestService) addInsight(ctx context.Context, agentName, agentID, sessionID, content string) (string, error) {
 	var embedding []float32
 	if s.autoModel == "" && s.embedder != nil {
 		var err error
@@ -599,7 +623,7 @@ func (s *IngestService) addInsight(ctx context.Context, agentName, sessionID, co
 		Content:    content,
 		MemoryType: domain.TypeInsight,
 		Source:     agentName,
-		AgentID:    agentName,
+		AgentID:    agentID,
 		SessionID:  sessionID,
 		Embedding:  embedding,
 		State:      domain.StateActive,
@@ -615,16 +639,11 @@ func (s *IngestService) addInsight(ctx context.Context, agentName, sessionID, co
 	return m.ID, nil
 }
 
-// updateInsight archives the old memory and creates a new one (append-new + archive-old model).
-func (s *IngestService) updateInsight(ctx context.Context, agentName, sessionID, oldID, newContent string) (string, error) {
+// updateInsight archives the old memory and creates a new one atomically (append-new + archive-old model).
+func (s *IngestService) updateInsight(ctx context.Context, agentName, agentID, sessionID, oldID, newContent string) (string, error) {
 	newID := uuid.New().String()
 
-	// Archive old memory, pointing to the new one.
-	if err := s.memories.ArchiveMemory(ctx, oldID, newID); err != nil {
-		return "", fmt.Errorf("archive old memory %s: %w", oldID, err)
-	}
-
-	// Create new memory.
+	// Create new memory object.
 	var embedding []float32
 	if s.autoModel == "" && s.embedder != nil {
 		var err error
@@ -640,7 +659,7 @@ func (s *IngestService) updateInsight(ctx context.Context, agentName, sessionID,
 		Content:    newContent,
 		MemoryType: domain.TypeInsight,
 		Source:     agentName,
-		AgentID:    agentName,
+		AgentID:    agentID,
 		SessionID:  sessionID,
 		Embedding:  embedding,
 		State:      domain.StateActive,
@@ -650,8 +669,9 @@ func (s *IngestService) updateInsight(ctx context.Context, agentName, sessionID,
 		UpdatedAt:  now,
 	}
 
-	if err := s.memories.Create(ctx, m); err != nil {
-		return "", fmt.Errorf("create updated insight: %w", err)
+	// Archive old + create new in a single transaction.
+	if err := s.memories.ArchiveAndCreate(ctx, oldID, newID, m); err != nil {
+		return "", fmt.Errorf("archive and create for %s: %w", oldID, err)
 	}
 	return newID, nil
 }
@@ -692,8 +712,8 @@ func formatConversation(messages []IngestMessage) string {
 	var sb strings.Builder
 	for _, msg := range messages {
 		role := msg.Role
-		if len(role) > 0 {
-			role = strings.ToUpper(role[:1]) + role[1:]
+		if r, _ := utf8.DecodeRuneInString(role); r != utf8.RuneError {
+			role = strings.ToUpper(string(r)) + role[utf8.RuneLen(r):]
 		}
 		sb.WriteString(role)
 		sb.WriteString(": ")
@@ -705,8 +725,7 @@ func formatConversation(messages []IngestMessage) string {
 
 // parseIntID parses a string integer ID, returning -1 on failure.
 func parseIntID(s string) int {
-	var id int
-	_, err := fmt.Sscanf(s, "%d", &id)
+	id, err := strconv.Atoi(s)
 	if err != nil {
 		return -1
 	}

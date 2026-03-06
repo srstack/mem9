@@ -12,7 +12,7 @@ export interface PluginConfig {
 
   tenantName?: string;
 
-  // Agent identity for CRDT vector clock (server mode only).
+  // Agent identity for server mode.
   // Defaults to "agent" if not set. Overridden by ctx.agentId at runtime.
   agentName?: string;
 
@@ -47,9 +47,6 @@ export interface Memory {
   created_at: string;
   updated_at: string;
   score?: number;
-  clock?: Record<string, number> | null;
-  origin_agent?: string | null;
-  tombstone?: boolean;
 
   // Smart memory pipeline (server mode)
   memory_type?: string;
@@ -71,8 +68,6 @@ export interface CreateMemoryInput {
   source?: string;
   tags?: string[];
   metadata?: Record<string, unknown>;
-  clock?: Record<string, number>;
-  write_id?: string;
 }
 
 export interface UpdateMemoryInput {

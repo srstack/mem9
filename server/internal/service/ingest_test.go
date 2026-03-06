@@ -32,6 +32,10 @@ func (m *memoryRepoMock) SoftDelete(ctx context.Context, id, agentName string) e
 func (m *memoryRepoMock) ArchiveMemory(ctx context.Context, id, supersededBy string) error {
 	return nil
 }
+func (m *memoryRepoMock) ArchiveAndCreate(ctx context.Context, archiveID, supersededBy string, newMem *domain.Memory) error {
+	m.createCalls = append(m.createCalls, newMem)
+	return nil
+}
 
 func (m *memoryRepoMock) SetState(ctx context.Context, id string, state domain.MemoryState) error {
 	return nil
@@ -249,7 +253,7 @@ func TestParseIntID(t *testing.T) {
 		{name: "negative integer", input: "-7", expected: -7},
 		{name: "invalid string", input: "abc", expected: -1},
 		{name: "empty string", input: "", expected: -1},
-		{name: "trailing text", input: "12x", expected: 12},
+		{name: "trailing text", input: "12x", expected: -1},
 	}
 
 	for _, tt := range tests {
@@ -312,7 +316,7 @@ func TestIngestModeRawStoresDigest(t *testing.T) {
 	}
 
 	created := memRepo.createCalls[0]
-	expectedContent := "user: hello\n\nassistant: world"
+	expectedContent := "User: hello\n\nAssistant: world"
 	if created.Content != expectedContent {
 		t.Fatalf("unexpected content: %q", created.Content)
 	}

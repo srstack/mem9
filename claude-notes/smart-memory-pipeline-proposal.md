@@ -98,7 +98,7 @@ Meanwhile:
 | `active` | ✅ Yes | Default state. Participates in search and prompt injection. |
 | `paused` | ❌ No | Temporarily hidden. User can pause a memory without deleting it (e.g., "I'm not using Go right now"). |
 | `archived` | ❌ No | Historical record. Auto-archived when superseded by UPDATE, or manually by user. Retained for audit trail. |
-| `deleted` | ❌ No | Soft delete. `deleted_at` timestamp set. Can be purged by background job after retention period. Replaces the existing `tombstone` boolean. |
+| `deleted` | ❌ No | Soft delete. `updated_at` records when deletion occurred. Can be purged by background job after retention period. |
 
 ---
 
@@ -113,7 +113,7 @@ The existing `tombstone TINYINT(1)` column (27 occurrences in repository layer) 
 ALTER TABLE memories ADD COLUMN state VARCHAR(20) NOT NULL DEFAULT 'active';
 
 -- Step 2: Migrate tombstoned records
-UPDATE memories SET state = 'deleted', deleted_at = updated_at WHERE tombstone = 1;
+UPDATE memories SET state = 'deleted' WHERE tombstone = 1;
 
 -- Step 3: Add constraint (AFTER all code is updated to use state instead of tombstone)
 ALTER TABLE memories ADD CONSTRAINT chk_state 
@@ -127,7 +127,7 @@ ALTER TABLE memories DROP COLUMN tombstone;
 
 1. **Step 1-2**: Run SQL migration (safe — no code changes needed, tombstone still works)
 2. **Update repository layer**: Replace all 27 `tombstone = 0` → `state = 'active'`, `tombstone = 1` → `state = 'deleted'`
-3. **Update service layer**: `SoftDelete` sets `state = 'deleted'` + `deleted_at` instead of `tombstone = 1`
+3. **Update service layer**: `SoftDelete` sets `state = 'deleted'` instead of `tombstone = 1`
 4. **Update domain types**: Remove `Tombstone bool`, add `State MemoryState`
 5. **Verify**: Run full test suite, confirm all queries work with `state`
 6. **Step 3**: Add CHECK constraint
@@ -150,82 +150,72 @@ ALTER TABLE memories
   -- Agent & session tracking
   ADD COLUMN agent_id     VARCHAR(100)  NULL        COMMENT 'Agent that created this memory',
   ADD COLUMN session_id   VARCHAR(100)  NULL        COMMENT 'Session this memory originated from',
-  
+
   -- State machine (replaces tombstone — see Section 4 for migration)
   ADD COLUMN state        VARCHAR(20)   NOT NULL DEFAULT 'active'
                           COMMENT 'Memory lifecycle: active|paused|archived|deleted',
-  ADD COLUMN archived_at  TIMESTAMP     NULL     COMMENT 'When state changed to archived',
-  ADD COLUMN deleted_at   TIMESTAMP     NULL     COMMENT 'When state changed to deleted',
-  
+
   -- Archive lineage
   ADD COLUMN superseded_by VARCHAR(36)  NULL     COMMENT 'ID of the memory that replaced this one (set on archive)';
 
--- New indexes
-CREATE INDEX idx_memory_type ON memories(space_id, memory_type);
-CREATE INDEX idx_state       ON memories(space_id, state);
-CREATE INDEX idx_agent       ON memories(space_id, agent_id);
-CREATE INDEX idx_session     ON memories(space_id, session_id);
+  -- New indexes (no space_id prefix — dedicated tenant model)
+CREATE INDEX idx_memory_type ON memories(memory_type);
+CREATE INDEX idx_state       ON memories(state);
+CREATE INDEX idx_agent       ON memories(agent_id);
+CREATE INDEX idx_session     ON memories(session_id);
 ```
 
-### Full Schema (after migration)
+> **Note**: `archived_at` and `deleted_at` columns were removed during implementation. The `state` column + `updated_at` timestamp is sufficient — `updated_at` records when the state transition happened.
+
+### Full Schema (tenant data plane — per-tenant TiDB Serverless)
 
 ```sql
 CREATE TABLE IF NOT EXISTS memories (
   -- Identity
   id              VARCHAR(36)     PRIMARY KEY,
-  space_id        VARCHAR(36)     NOT NULL,
-  
+
   -- Content
   content         TEXT            NOT NULL,
-  key_name        VARCHAR(255),
   embedding       VECTOR(1536)    NULL,
-  
-  -- Classification (NEW)
+
+  -- Classification
   memory_type     VARCHAR(20)     NOT NULL DEFAULT 'pinned'
                   COMMENT 'pinned|insight|digest',
-  
-  -- Provenance (UNCHANGED — source still stores agent name)
+
+  -- Provenance (source stores agent name)
   source          VARCHAR(100),
   tags            JSON,
   metadata        JSON,
-  agent_id        VARCHAR(100)    NULL,
-  session_id      VARCHAR(100)    NULL,
+  agent_id        VARCHAR(100)    NULL     COMMENT 'Agent that created this memory',
+  session_id      VARCHAR(100)    NULL     COMMENT 'Session this memory originated from',
   updated_by      VARCHAR(100),
-  
+
   -- Lifecycle
-  state           VARCHAR(20)     NOT NULL DEFAULT 'active',
+  state           VARCHAR(20)     NOT NULL DEFAULT 'active'
+                  COMMENT 'active|paused|archived|deleted',
   version         INT             DEFAULT 1,
   created_at      TIMESTAMP       DEFAULT CURRENT_TIMESTAMP,
   updated_at      TIMESTAMP       DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  archived_at     TIMESTAMP       NULL,
-  deleted_at      TIMESTAMP       NULL,
-  superseded_by   VARCHAR(36)     NULL,
-  
-  -- CRDT (existing, kept for multi-agent conflict resolution)
-  vector_clock        JSON        NOT NULL DEFAULT ('{}'),
-  origin_agent        VARCHAR(64),
-  last_write_id       VARCHAR(36),
-  last_write_snapshot JSON,
-  last_write_status   TINYINT,
-  
+  superseded_by   VARCHAR(36)     NULL     COMMENT 'ID of the memory that replaced this one',
+
   -- Indexes
-  UNIQUE INDEX idx_key          (space_id, key_name),
-  INDEX idx_space               (space_id),
-  INDEX idx_memory_type         (space_id, memory_type),
-  INDEX idx_source              (space_id, source),
-  INDEX idx_state               (space_id, state),
-  INDEX idx_agent               (space_id, agent_id),
-  INDEX idx_session             (space_id, session_id),
-  INDEX idx_updated             (space_id, updated_at)
+  INDEX idx_memory_type         (memory_type),
+  INDEX idx_source              (source),
+  INDEX idx_state               (state),
+  INDEX idx_agent               (agent_id),
+  INDEX idx_session             (session_id),
+  INDEX idx_updated             (updated_at)
 );
 ```
 
 **Key decisions:**
-- `source` column is **preserved as-is** — still stores agent name (provenance). No breaking change.
-- `memory_type` is the **new** classification field (`pinned|insight|digest`). Defaults to `pinned` for backward compatibility.
-- `tombstone` column is DROPPED after 4-step migration (Section 4); replaced by `state = 'deleted'`.
-- `superseded_by` tracks archive lineage: when a memory is archived by an UPDATE, this points to the new replacement memory.
-- `origin_agent` kept for CRDT compatibility; `agent_id` is the new user-facing provenance field.
+- **No `space_id`**: Dedicated tenant model — the entire database belongs to one tenant. No space isolation needed.
+- **No `key_name`**: Deduplication uses vector search (semantic similarity), not key-based lookup. Content-addressed, not name-addressed.
+- **No `archived_at` / `deleted_at`**: Redundant with `state` + `updated_at`. The `state` column is the single source of truth for lifecycle; `updated_at` records when the transition happened.
+- **No CRDT columns** (`vector_clock`, `origin_agent`, `last_write_id`, etc.): CRDT conflict resolution removed to simplify the codebase. All memory types use the same update path: vector search → LLM reconciliation.
+- `source` column is **preserved as-is** — stores agent name (provenance). No breaking change.
+- `memory_type` is the classification field (`pinned|insight|digest`). Defaults to `pinned` for backward compatibility.
+- `superseded_by` tracks archive lineage: when a memory is archived by UPDATE, this points to the new replacement memory.
 - Vector search in Phase 2 handles dedup (semantic similarity catches rephrased duplicates).
 - `session_id` is nullable — `pinned` memories have no session. `insight` and `digest` always have one.
 
@@ -240,7 +230,7 @@ Phase 2 LLM decides: UPDATE id="mem_abc" → "Uses Go 1.22" (was "Uses Go 1.21")
     │
     ├── 1. Old row (mem_abc):
     │       state = 'archived'
-    │       archived_at = NOW()
+    │       updated_at = NOW()
     │       superseded_by = 'mem_def'  (new memory's ID)
     │
     └── 2. New row (mem_def):
@@ -253,16 +243,11 @@ Phase 2 LLM decides: UPDATE id="mem_abc" → "Uses Go 1.22" (was "Uses Go 1.21")
 ```
 
 **Why append-new instead of in-place update?**
-- `UNIQUE INDEX idx_key (space_id, key_name)` prevents multiple active rows with same key
-- But insights typically have **no `key_name`** — they're content-addressed via vector search
+- All memory types (including `pinned`) go through the same update path: vector search → LLM reconciliation
 - Append-new preserves full audit trail without a separate history table
 - `superseded_by` creates a linked list of versions: `mem_abc → mem_def → mem_ghi`
 - Archived memories are excluded from search (`state = 'active'` filter), so no noise
-
-**For keyed upserts (existing CRDT path)**:
-- Keyed memories (user-explicit via `memory_store` with a `key_name`) continue to use in-place UPDATE
-- Only pipeline insights/digests use the append-new model
-- This avoids conflict with the CRDT vector clock system
+- The archive + create is wrapped in a single database transaction (`ArchiveAndCreate`) to prevent orphaned records
 
 ---
 
@@ -289,38 +274,35 @@ const (
     StateDeleted  MemoryState = "deleted"   // Soft-deleted, awaiting purge
 )
 
-// Memory represents a piece of knowledge stored in a space.
+// Memory represents a piece of knowledge stored in a tenant's database.
 type Memory struct {
-    ID          string          `json:"id"`
-    SpaceID     string          `json:"-"`
-    Content     string          `json:"content"`
-    KeyName     string          `json:"key,omitempty"`
-    MemoryType  MemoryType      `json:"memory_type"`
-    Source      string          `json:"source,omitempty"`    // Preserved: agent name provenance
-    Tags        []string        `json:"tags,omitempty"`
-    Metadata    json.RawMessage `json:"metadata,omitempty"`
-    Embedding   []float32       `json:"-"`
+    ID         string          `json:"id"`
+    Content    string          `json:"content"`
+    MemoryType MemoryType      `json:"memory_type"`
+    Source     string          `json:"source,omitempty"`    // Agent name provenance
+    Tags       []string        `json:"tags,omitempty"`
+    Metadata   json.RawMessage `json:"metadata,omitempty"`
+    Embedding  []float32       `json:"-"`
 
     AgentID      string `json:"agent_id,omitempty"`
     SessionID    string `json:"session_id,omitempty"`
     UpdatedBy    string `json:"updated_by,omitempty"`
     SupersededBy string `json:"superseded_by,omitempty"` // Points to replacement memory
 
-    State      MemoryState `json:"state"`
-    Version    int         `json:"version"`
-    CreatedAt  time.Time   `json:"created_at"`
-    UpdatedAt  time.Time   `json:"updated_at"`
-    ArchivedAt *time.Time  `json:"archived_at,omitempty"`
-    DeletedAt  *time.Time  `json:"deleted_at,omitempty"`
+    State     MemoryState `json:"state"`
+    Version   int         `json:"version"`
+    CreatedAt time.Time   `json:"created_at"`
+    UpdatedAt time.Time   `json:"updated_at"`
 
     Score *float64 `json:"score,omitempty"`
-
-    // CRDT fields (existing)
-    VectorClock map[string]uint64 `json:"clock,omitempty"`
-    OriginAgent string            `json:"origin_agent,omitempty"`
-    WriteID     string            `json:"-"`
 }
 ```
+
+> **Removed from original design:**
+> - `SpaceID` — dedicated tenant model, no space isolation
+> - `KeyName` — dedup via vector search, not key-based lookup
+> - `ArchivedAt` / `DeletedAt` — redundant with `state` + `updated_at`
+> - CRDT fields (`VectorClock`, `OriginAgent`, `WriteID`) — all memory types use vector search → LLM reconciliation
 
 ---
 
@@ -330,7 +312,7 @@ type Memory struct {
 
 ```
 POST /api/memories/ingest
-Authorization: Bearer <space_token>
+Authorization: Bearer <tenant_token>
 Content-Type: application/json
 
 {
@@ -742,7 +724,7 @@ Session digests have diminishing value over time. Auto-archive strategy:
 | `GET /api/memories` | New filter: `?state=active` (default), `?memory_type=insight` |
 | `POST /api/memories` | Accepts optional `agent_id`, `session_id`, `memory_type`; `memory_type` defaults to `pinned` |
 | `PUT /api/memories/:id` | Can change `state` (pause/archive/restore) |
-| `DELETE /api/memories/:id` | Sets `state='deleted'` + `deleted_at` instead of `tombstone=true` |
+| `DELETE /api/memories/:id` | Sets `state='deleted'` + `updated_at=NOW()` |
 
 ### New Query Parameters
 
@@ -843,8 +825,8 @@ api.on("agent_end", async (event) => {
 |-----|------|---------|-------------|
 | `maxIngestBytes` | `number` | `200000` | Max total message bytes sent to `/api/memories/ingest`. Lowering saves LLM tokens; raising captures more context. |
 
-**Key changes from mem0 reference:**
-- mem0 uses fixed `slice(-10)` — fails on large code-heavy conversations
+**Key design decisions:**
+- Fixed message count (`slice(-10)`) fails on large code-heavy conversations
 - Our approach: byte-budgeted selection — adapts to message size automatically
 - Plugin remains a thin transport layer. All intelligence lives in the server.
 
@@ -865,7 +847,7 @@ api.on("agent_end", async (event) => {
 2. Update 27 repository layer occurrences: `tombstone = 0` → `state = 'active'`
 3. Update service layer: `SoftDelete` uses state
 4. Update domain types: add `MemoryState`, `MemoryType`, `SupersededBy`
-5. Add `archived_at`, `deleted_at`, `superseded_by` columns
+5. Add `superseded_by` column
 6. Update search to filter `state='active'` by default
 7. Deploy and verify — bake before dropping `tombstone`
 
@@ -931,4 +913,4 @@ This proposal describes the pipeline that runs **inside** each tenant's database
 - **Registration flow**: `POST /api/tenants/register` → provision cluster → init schema → return token
 - **Two-model coexistence**: Shared-DB (space isolation) and dedicated-DB (tenant isolation) work side by side
 
-**Key implication for this proposal**: In the dedicated-cluster model, the `memories` table has **no `space_id` column** — the entire database belongs to one tenant. The schema in Section 5 above is for the shared-DB model; the tenant-specific schema omits `space_id` and its related indexes.
+**Key implication for this proposal**: The `memories` table has **no `space_id` column** — each tenant gets a dedicated TiDB Serverless cluster, so the entire database belongs to one tenant. The schema in Section 5 reflects this dedicated-cluster model.

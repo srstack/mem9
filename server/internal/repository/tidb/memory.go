@@ -181,11 +181,67 @@ func (r *MemoryRepo) SoftDelete(ctx context.Context, id, agentName string) error
 }
 
 func (r *MemoryRepo) ArchiveMemory(ctx context.Context, id, supersededBy string) error {
-	_, err := r.db.ExecContext(ctx,
-		`UPDATE memories SET state = 'archived', superseded_by = ?, updated_at = NOW() WHERE id = ?`,
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE memories SET state = 'archived', superseded_by = ?, updated_at = NOW()
+		 WHERE id = ? AND state = 'active'`,
 		supersededBy, id,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *MemoryRepo) ArchiveAndCreate(ctx context.Context, archiveID, supersededBy string, newMem *domain.Memory) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx,
+		`UPDATE memories SET state = 'archived', superseded_by = ?, updated_at = NOW()
+		 WHERE id = ? AND state = 'active'`,
+		supersededBy, archiveID,
+	)
+	if err != nil {
+		return fmt.Errorf("archive old memory: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return domain.ErrNotFound
+	}
+
+	tagsJSON := marshalTags(newMem.Tags)
+	memoryType := string(newMem.MemoryType)
+	if memoryType == "" {
+		memoryType = string(domain.TypePinned)
+	}
+
+	if r.autoModel != "" {
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO memories (id, content, source, tags, metadata, memory_type, agent_id, session_id, state, version, updated_by, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NOW(), NOW())`,
+			newMem.ID, newMem.Content, nullString(newMem.Source),
+			tagsJSON, nullJSON(newMem.Metadata), memoryType, nullString(newMem.AgentID), nullString(newMem.SessionID),
+			newMem.Version, nullString(newMem.UpdatedBy),
+		)
+	} else {
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO memories (id, content, source, tags, metadata, embedding, memory_type, agent_id, session_id, state, version, updated_by, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NOW(), NOW())`,
+			newMem.ID, newMem.Content, nullString(newMem.Source),
+			tagsJSON, nullJSON(newMem.Metadata), vecToString(newMem.Embedding), memoryType, nullString(newMem.AgentID), nullString(newMem.SessionID),
+			newMem.Version, nullString(newMem.UpdatedBy),
+		)
+	}
+	if err != nil {
+		return fmt.Errorf("create new memory: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 func (r *MemoryRepo) SetState(ctx context.Context, id string, state domain.MemoryState) error {

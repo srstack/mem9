@@ -13,6 +13,7 @@ type MemoryRepo interface {
 	UpdateOptimistic(ctx context.Context, m *domain.Memory, expectedVersion int) error
 	SoftDelete(ctx context.Context, id, agentName string) error
 	ArchiveMemory(ctx context.Context, id, supersededBy string) error
+	ArchiveAndCreate(ctx context.Context, archiveID, supersededBy string, newMem *domain.Memory) error
 	SetState(ctx context.Context, id string, state domain.MemoryState) error
 	List(ctx context.Context, f domain.MemoryFilter) (memories []domain.Memory, total int, err error)
 	Count(ctx context.Context) (int, error)

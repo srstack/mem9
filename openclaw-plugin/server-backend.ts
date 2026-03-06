@@ -9,13 +9,6 @@ import type {
   IngestResult,
 } from "./types.js";
 
-function uuidv4(): string {
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
-  });
-}
-
 type TenantRegisterResponse = {
   ok: boolean;
   tenant_id: string;
@@ -64,38 +57,7 @@ export class ServerBackend implements MemoryBackend {
   }
 
   async store(input: CreateMemoryInput): Promise<Memory> {
-    if (!input.key) {
-      return this.request("POST", "/api/memories", input);
-    }
-
-    const existing = await this.fetchByKey(input.key);
-    const baseClock: Record<string, number> = existing?.clock
-      ? { ...existing.clock }
-      : {};
-    baseClock[this.agentName] = (baseClock[this.agentName] ?? 0) + 1;
-
-    const body: CreateMemoryInput = {
-      ...input,
-      clock: baseClock,
-      write_id: uuidv4(),
-    };
-
-    const resp = await this.requestRaw("POST", "/api/memories", body);
-    const mem = await resp.json() as Memory;
-    return mem;
-  }
-
-  private async fetchByKey(key: string): Promise<Memory | null> {
-    try {
-      const params = new URLSearchParams({ key, limit: "1" });
-      const raw = await this.request<{
-        memories: Memory[];
-        total: number;
-      }>("GET", `/api/memories?${params.toString()}`);
-      return raw.memories?.[0] ?? null;
-    } catch {
-      return null;
-    }
+    return this.request("POST", "/api/memories", input);
   }
 
   async search(input: SearchInput): Promise<SearchResult> {
@@ -103,7 +65,6 @@ export class ServerBackend implements MemoryBackend {
     if (input.q) params.set("q", input.q);
     if (input.tags) params.set("tags", input.tags);
     if (input.source) params.set("source", input.source);
-    if (input.key) params.set("key", input.key);
     if (input.limit != null) params.set("limit", String(input.limit));
     if (input.offset != null) params.set("offset", String(input.offset));
 
