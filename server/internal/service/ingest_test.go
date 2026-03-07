@@ -390,3 +390,34 @@ func TestDeleteReconcileErrNotFoundIsNotWarning(t *testing.T) {
 		t.Fatalf("expected 1 warning for real error, got %d", warnings)
 	}
 }
+
+func TestTruncateRunes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		max      int
+		expected string
+	}{
+		{name: "short ASCII", input: "hello", max: 10, expected: "hello"},
+		{name: "exact ASCII", input: "hello", max: 5, expected: "hello"},
+		{name: "truncate ASCII", input: "hello world", max: 5, expected: "hello..."},
+		{name: "Chinese no truncate", input: "你好世界", max: 4, expected: "你好世界"},
+		{name: "Chinese truncate", input: "你好世界再见", max: 4, expected: "你好世界..."},
+		{name: "mixed content", input: "hello你好world", max: 7, expected: "hello你好..."},
+		{name: "empty string", input: "", max: 5, expected: ""},
+		{name: "zero max", input: "hello", max: 0, expected: "..."},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := truncateRunes(tt.input, tt.max)
+			if got != tt.expected {
+				t.Fatalf("truncateRunes(%q, %d) = %q, expected %q", tt.input, tt.max, got, tt.expected)
+			}
+		})
+	}
+}

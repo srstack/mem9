@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -56,10 +58,15 @@ type Message struct {
 	Content string `json:"content"`
 }
 
+type responseFormat struct {
+	Type string `json:"type"`
+}
+
 type chatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature float64   `json:"temperature"`
+	Model          string          `json:"model"`
+	Messages       []Message       `json:"messages"`
+	Temperature    float64         `json:"temperature"`
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 }
 
 type chatResponse struct {
@@ -73,16 +80,49 @@ type chatResponse struct {
 	} `json:"error,omitempty"`
 }
 
+// HTTPStatusError is returned when the LLM API responds with an HTTP error status code.
+// This enables callers (e.g., CompleteJSON) to detect specific HTTP codes.
+type HTTPStatusError struct {
+	Code int
+	Body string
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("llm http %d: %s", e.Code, e.Body)
+}
+
+// Complete sends a chat completion request to the LLM.
 func (c *Client) Complete(ctx context.Context, system, user string) (string, error) {
+	return c.complete(ctx, system, user, nil)
+}
+
+// CompleteJSON sends a chat completion request with response_format: json_object.
+// This instructs the model to return valid JSON, improving reliability.
+// If the provider returns HTTP 400 (e.g., Ollama, some vLLM builds that don't support
+// response_format), it automatically retries without the parameter.
+func (c *Client) CompleteJSON(ctx context.Context, system, user string) (string, error) {
+	result, err := c.complete(ctx, system, user, &responseFormat{Type: "json_object"})
+	if err != nil {
+		var httpErr *HTTPStatusError
+		if errors.As(err, &httpErr) && httpErr.Code == http.StatusBadRequest {
+			slog.Warn("LLM rejected response_format:json_object (HTTP 400), retrying without it")
+			return c.complete(ctx, system, user, nil)
+		}
+	}
+	return result, err
+}
+
+func (c *Client) complete(ctx context.Context, system, user string, respFmt *responseFormat) (string, error) {
 	messages := []Message{
 		{Role: "system", Content: system},
 		{Role: "user", Content: user},
 	}
 
 	body, err := json.Marshal(chatRequest{
-		Model:       c.model,
-		Messages:    messages,
-		Temperature: c.temperature,
+		Model:          c.model,
+		Messages:       messages,
+		Temperature:    c.temperature,
+		ResponseFormat: respFmt,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
@@ -104,6 +144,11 @@ func (c *Client) Complete(ctx context.Context, system, user string) (string, err
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	// Surface HTTP errors as typed errors so callers can detect specific status codes.
+	if resp.StatusCode >= 400 {
+		return "", &HTTPStatusError{Code: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var chatResp chatResponse

@@ -1,6 +1,6 @@
 # OpenClaw Plugin for mnemos
 
-Memory plugin for [OpenClaw](https://github.com/openclaw) — replaces the built-in memory slot with cloud-persistent shared memory. Runs in server mode only, connecting to `mnemo-server` via `apiUrl` + `userToken`.
+Memory plugin for [OpenClaw](https://github.com/openclaw) — replaces the built-in memory slot with cloud-persistent shared memory. Runs in server mode only, connecting to `mnemo-server` via `apiUrl` + `apiToken`.
 
 ## 🚀 Quick Start (Server Mode)
 
@@ -31,7 +31,7 @@ Add mnemo to your project's `openclaw.json`:
         "enabled": true,
         "config": {
           "apiUrl": "http://localhost:8080",
-          "userToken": "mnemo_abc123"
+          "apiToken": "mnemo_abc123"
         }
       }
     }
@@ -130,7 +130,7 @@ curl -s -X POST http://localhost:8080/api/users \
 
 **Step 3: Configure each OpenClaw instance**
 
-Each agent uses its own `userToken`. The server provisions a space token on first use and scopes all memory to that space.
+Each agent uses its own `apiToken`. The server provisions a space token on first use and scopes all memory to that space.
 
 ```json
 {
@@ -143,7 +143,7 @@ Each agent uses its own `userToken`. The server provisions a space token on firs
         "enabled": true,
         "config": {
           "apiUrl": "http://your-server:8080",
-          "userToken": "mnemo_abc123"
+          "apiToken": "mnemo_abc123"
         }
       }
     }
