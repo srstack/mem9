@@ -95,6 +95,30 @@ const { nav, aria, localeNames, themeOptions } = Astro.props;
             >
               {localeNames.ja}
             </button>
+            <button
+              type="button"
+              class="menu-option"
+              data-set-locale="ko"
+              aria-pressed="false"
+            >
+              {localeNames.ko}
+            </button>
+            <button
+              type="button"
+              class="menu-option"
+              data-set-locale="id"
+              aria-pressed="false"
+            >
+              {localeNames.id}
+            </button>
+            <button
+              type="button"
+              class="menu-option"
+              data-set-locale="th"
+              aria-pressed="false"
+            >
+              {localeNames.th}
+            </button>
           </div>
         </div>
 
@@ -283,7 +307,7 @@ const { nav, aria, localeNames, themeOptions } = Astro.props;
   }
 
   .language-menu {
-    min-width: 7rem;
+    min-width: 11.5rem;
   }
 
   .theme-menu {
@@ -295,6 +319,7 @@ const { nav, aria, localeNames, themeOptions } = Astro.props;
     border-radius: 0.8rem;
     padding: 0.55rem 0.75rem;
     text-align: left;
+    white-space: nowrap;
     color: var(--text-dim);
     background: transparent;
     cursor: pointer;

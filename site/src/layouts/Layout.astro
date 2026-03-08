@@ -44,7 +44,14 @@ const canonical = new URL(Astro.url.pathname, Astro.site ?? 'https://mem9.ai').t
             }
           })();
 
-          if (storedLocale === 'en' || storedLocale === 'zh' || storedLocale === 'ja') {
+          if (
+            storedLocale === 'en' ||
+            storedLocale === 'zh' ||
+            storedLocale === 'ja' ||
+            storedLocale === 'ko' ||
+            storedLocale === 'id' ||
+            storedLocale === 'th'
+          ) {
             return storedLocale;
           }
 
@@ -57,6 +64,18 @@ const canonical = new URL(Astro.url.pathname, Astro.site ?? 'https://mem9.ai').t
 
             if (normalized.startsWith('ja')) {
               return 'ja';
+            }
+
+            if (normalized.startsWith('ko')) {
+              return 'ko';
+            }
+
+            if (normalized.startsWith('id') || normalized.startsWith('in')) {
+              return 'id';
+            }
+
+            if (normalized.startsWith('th')) {
+              return 'th';
             }
 
             if (normalized.startsWith('en')) {

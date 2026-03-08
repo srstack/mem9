@@ -55,6 +55,18 @@ function resolveBrowserLocale(): SiteLocale {
       return 'ja';
     }
 
+    if (normalized.startsWith('ko')) {
+      return 'ko';
+    }
+
+    if (normalized.startsWith('id') || normalized.startsWith('in')) {
+      return 'id';
+    }
+
+    if (normalized.startsWith('th')) {
+      return 'th';
+    }
+
     if (normalized.startsWith('en')) {
       return 'en';
     }
