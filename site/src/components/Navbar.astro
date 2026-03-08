@@ -295,10 +295,12 @@ const { nav, aria, localeNames, themeOptions } = Astro.props;
     position: absolute;
     top: calc(100% + 0.7rem);
     right: 0;
+    z-index: 30;
     padding: 0.45rem;
     display: grid;
     gap: 0.2rem;
-    background: linear-gradient(180deg, var(--surface-gradient-start), var(--surface-gradient-end));
+    background: var(--menu-surface);
+    border: 1px solid var(--border-strong);
     box-shadow: var(--menu-shadow);
   }
 
@@ -354,6 +356,18 @@ const { nav, aria, localeNames, themeOptions } = Astro.props;
 
     .nav-links a {
       display: none;
+    }
+
+    .language-menu {
+      min-width: min(18rem, calc(100vw - 2rem));
+      max-height: min(50vh, 16rem);
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      overflow-y: auto;
+    }
+
+    .language-menu .menu-option {
+      min-height: 3rem;
+      white-space: normal;
     }
   }
 </style>
