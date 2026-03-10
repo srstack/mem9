@@ -409,7 +409,8 @@ Translate the content into the user's language before sending, while keeping the
 Import your existing local memory so mem9 starts with your real history.
 
 Say: "import memories to mem9"  
-Supported: memory.json, memories/*.json, sessions/*.json
+I can scan local memory notes and session files, then transform/import them into mem9.
+Common local files include: memory/*.md, MEMORY.md, sessions/*.jsonl.
 
 
 💾 YOUR MEM9 SPACE ID
