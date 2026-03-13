@@ -21,7 +21,7 @@ Migrate the tenant provisioning mechanism from **TiDB Zero API** to **TiDB Cloud
 | Response | `{"instance": {...}}` | Direct cluster object |
 | Cluster Type | Temporary (requires claim) | Permanent Starter |
 | Schema | Application creates | Pre-configured |
-| `initSchema` | Execute DDL | Return nil (no-op) |
+| `initSchema` | Execute DDL | Verify schema exists (`SELECT 1 FROM memories`) |
 
 ## Environment Variables
 
@@ -97,6 +97,8 @@ type ZeroProvisioner struct { ... }
 
 // server/internal/tenant/starter.go
 // TiDBCloudProvisioner implements Provisioner for TiDB Cloud Pool API
+// Note: TIDBCLOUD_API_KEY and TIDBCLOUD_API_SECRET are read via os.Getenv()
+// (not Config) as these are sensitive credentials that should not be persisted
 type TiDBCloudProvisioner struct {
     apiURL    string
     apiKey    string      // from TIDBCLOUD_API_KEY env
@@ -135,7 +137,7 @@ func (c *TiDBCloudProvisioner) Provision(ctx context.Context) (*ClusterInfo, err
 }
 
 func (c *TiDBCloudProvisioner) InitSchema(ctx context.Context, db *sql.DB) error {
-    // Verify pre-configured schema exists (do not run DDL)
+    // Verify pre-configured schema exists via SELECT (do not run DDL)
     if _, err := db.ExecContext(ctx, "SELECT 1 FROM memories LIMIT 1"); err != nil {
         return fmt.Errorf("schema verification failed: %w", err)
     }
@@ -176,6 +178,11 @@ type TenantService struct {
 }
 
 func (s *TenantService) Provision(ctx context.Context) (*ProvisionResult, error) {
+    // Guard: provisioner must be configured
+    if s.provisioner == nil {
+        return nil, &domain.ValidationError{Message: "provisioning not configured"}
+    }
+    
     // 1. Call Provisioner.Provision() to acquire cluster
     info, err := s.provisioner.Provision(ctx)
     
@@ -255,7 +262,7 @@ Authorization: Digest ...
 | Port | `endpoints.public.port` | `DBPort` | Always `4000` |
 | User Prefix | `userPrefix` | `DBUser` | Concatenate: `userPrefix + ".root"` |
 | Password | (request body) | `DBPassword` | Code-generated random password |
-| DB Name | (hardcoded) | `DBName` | `"test"` (same as Zero; verified via `SELECT 1` before persisting) |
+| DB Name | (hardcoded) | `DBName` | `"test"` (TiDB Cloud Pool provides this by default) |
 
 ### Example Response
 
@@ -319,7 +326,7 @@ type Tenant struct {
 | Scenario | Behavior |
 |----------|----------|
 | TiDB Cloud API returns error | Return error, no tenant record created, caller gets HTTP 5xx |
-| Cluster acquired but `tenants.Create` fails | Cluster is orphaned (no automated release API exists). Log cluster ID at ERROR level for manual operator cleanup |
+| Cluster acquired but `tenants.Create` fails | Cluster is orphaned (no release API). Log: `cluster_id`, `pool_id`, timestamp. Operator manually deletes cluster in TiDB Cloud console. Set quota alert if repeated |
 | `InitSchema` fails | Tenant stays in `"provisioning"` status for retry/compensation |
 
 ## Security Considerations
