@@ -155,55 +155,48 @@ func (p *ZeroProvisioner) ProviderType() string {
 // InitSchema executes DDL to create the schema for Zero clusters.
 // Note: Zero mode only supports tidb backend for auto-provisioning.
 func (p *ZeroProvisioner) InitSchema(ctx context.Context, db *sql.DB) error {
-	switch p.backend {
-	// Zero mode only supports tidb backend.
-	// pg/db9 backends do not support auto-provisioning via Zero API.
 	/*
-	case "postgres":
-		if _, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
-			return fmt.Errorf("init schema: pgvector extension: %w", err)
-		}
-		if _, err := db.ExecContext(ctx, TenantMemorySchemaPostgres); err != nil {
-			return fmt.Errorf("init schema: create table: %w", err)
-		}
-		return nil
+		case "postgres":
+			if _, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
+				return fmt.Errorf("init schema: pgvector extension: %w", err)
+			}
+			if _, err := db.ExecContext(ctx, TenantMemorySchemaPostgres); err != nil {
+				return fmt.Errorf("init schema: create table: %w", err)
+			}
+			return nil
 
-	case "db9":
-		if _, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS embedding`); err != nil {
-			// Continue anyway - embedding extension may not be required
-		}
-		if _, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
-			return fmt.Errorf("init schema: vector extension: %w", err)
-		}
-		if _, err := db.ExecContext(ctx, BuildDB9MemorySchema(p.autoModel, p.autoDims)); err != nil {
-			return fmt.Errorf("init schema: create table: %w", err)
-		}
-		// Add HNSW index
-		if _, err := db.ExecContext(ctx,
-			`CREATE INDEX IF NOT EXISTS idx_memory_embedding ON memories USING hnsw (embedding vector_cosine_ops)`); err != nil {
-			return fmt.Errorf("init schema: hnsw index: %w", err)
-		}
-		return nil
+		case "db9":
+			if _, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS embedding`); err != nil {
+				// Continue anyway - embedding extension may not be required
+			}
+			if _, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
+				return fmt.Errorf("init schema: vector extension: %w", err)
+			}
+			if _, err := db.ExecContext(ctx, BuildDB9MemorySchema(p.autoModel, p.autoDims)); err != nil {
+				return fmt.Errorf("init schema: create table: %w", err)
+			}
+			// Add HNSW index
+			if _, err := db.ExecContext(ctx,
+				`CREATE INDEX IF NOT EXISTS idx_memory_embedding ON memories USING hnsw (embedding vector_cosine_ops)`); err != nil {
+				return fmt.Errorf("init schema: hnsw index: %w", err)
+			}
+			return nil
 	*/
-	case "tidb":
-		if _, err := db.ExecContext(ctx, BuildMemorySchema(p.autoModel, p.autoDims)); err != nil {
-			return fmt.Errorf("init schema: create table: %w", err)
-		}
-		if p.autoModel != "" {
-			if _, err := db.ExecContext(ctx,
-				`ALTER TABLE memories ADD VECTOR INDEX idx_cosine ((VEC_COSINE_DISTANCE(embedding))) ADD_COLUMNAR_REPLICA_ON_DEMAND`); err != nil {
-				return fmt.Errorf("init schema: vector index: %w", err)
-			}
-		}
-		if p.ftsEnabled {
-			if _, err := db.ExecContext(ctx,
-				`ALTER TABLE memories ADD FULLTEXT INDEX idx_fts_content (content) WITH PARSER MULTILINGUAL ADD_COLUMNAR_REPLICA_ON_DEMAND`); err != nil {
-				return fmt.Errorf("init schema: fulltext index: %w", err)
-			}
-		}
-		return nil
-
-	default:
-		return fmt.Errorf("init schema: unsupported backend %q", p.backend)
+	if _, err := db.ExecContext(ctx, BuildMemorySchema(p.autoModel, p.autoDims)); err != nil {
+		return fmt.Errorf("init schema: create table: %w", err)
 	}
+	if p.autoModel != "" {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE memories ADD VECTOR INDEX idx_cosine ((VEC_COSINE_DISTANCE(embedding))) ADD_COLUMNAR_REPLICA_ON_DEMAND`); err != nil {
+			return fmt.Errorf("init schema: vector index: %w", err)
+		}
+	}
+	if p.ftsEnabled {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE memories ADD FULLTEXT INDEX idx_fts_content (content) WITH PARSER MULTILINGUAL ADD_COLUMNAR_REPLICA_ON_DEMAND`); err != nil {
+			return fmt.Errorf("init schema: fulltext index: %w", err)
+		}
+	}
+	return nil
+
 }
