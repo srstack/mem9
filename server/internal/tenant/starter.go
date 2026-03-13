@@ -78,8 +78,12 @@ func (p *TiDBCloudProvisioner) Provision(ctx context.Context) (*ClusterInfo, err
 		Username: result.UserPrefix + ".root",
 		Password: password,
 		DBName:   "test",
-		Provider: "tidb_cloud_starter",
 	}, nil
+}
+
+// ProviderType returns the provider identifier.
+func (p *TiDBCloudProvisioner) ProviderType() string {
+	return "tidb_cloud_starter"
 }
 
 // InitSchema verifies the pre-configured schema exists.

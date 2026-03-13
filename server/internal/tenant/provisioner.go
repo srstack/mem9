@@ -9,6 +9,7 @@ import (
 type Provisioner interface {
 	Provision(ctx context.Context) (*ClusterInfo, error)
 	InitSchema(ctx context.Context, db *sql.DB) error
+	ProviderType() string // Returns "tidb_zero" or "tidb_cloud_starter"
 }
 
 // ClusterInfo contains connection details for a provisioned cluster
@@ -19,5 +20,4 @@ type ClusterInfo struct {
 	Username string
 	Password string
 	DBName   string
-	Provider string // "tidb_zero" or "tidb_cloud_starter"
 }

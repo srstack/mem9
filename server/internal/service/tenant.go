@@ -68,7 +68,7 @@ func (s *TenantService) Provision(ctx context.Context) (*ProvisionResult, error)
 	t0 := time.Now()
 	info, err := s.provisioner.Provision(ctx)
 	elapsed := time.Since(t0)
-	providerType := info.Provider
+	providerType := s.provisioner.ProviderType()
 	s.logger.Info("provision step", "step", "cluster_acquire", "provider", providerType, "duration_ms", elapsed.Milliseconds())
 	metrics.ProvisionStepDuration.WithLabelValues("cluster_acquire_" + providerType).Observe(elapsed.Seconds())
 	if err != nil {
@@ -88,7 +88,7 @@ func (s *TenantService) Provision(ctx context.Context) (*ProvisionResult, error)
 		DBPassword:    info.Password,
 		DBName:        info.DBName,
 		DBTLS:         true,
-		Provider:      info.Provider,
+		Provider:      providerType,
 		ClusterID:     info.ID,
 		Status:        domain.TenantProvisioning,
 		SchemaVersion: 0,
