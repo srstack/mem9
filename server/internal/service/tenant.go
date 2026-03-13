@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,118 +14,6 @@ import (
 	"github.com/qiffang/mnemos/server/internal/repository"
 	"github.com/qiffang/mnemos/server/internal/tenant"
 )
-
-// tenantMemorySchemaBase is the MySQL/TiDB schema template.
-// The %s placeholder is replaced with the embedding column definition.
-const tenantMemorySchemaBase = `CREATE TABLE IF NOT EXISTS memories (
-    id              VARCHAR(36)     PRIMARY KEY,
-    content         TEXT            NOT NULL,
-    source          VARCHAR(100),
-    tags            JSON,
-    metadata        JSON,
-    %s
-    memory_type     VARCHAR(20)     NOT NULL DEFAULT 'pinned',
-    agent_id        VARCHAR(100)    NULL,
-    session_id      VARCHAR(100)    NULL,
-    state           VARCHAR(20)     NOT NULL DEFAULT 'active',
-    version         INT             DEFAULT 1,
-    updated_by      VARCHAR(100),
-    superseded_by   VARCHAR(36)     NULL,
-    created_at      TIMESTAMP       DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TIMESTAMP       DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_memory_type         (memory_type),
-    INDEX idx_source              (source),
-    INDEX idx_state               (state),
-    INDEX idx_agent               (agent_id),
-    INDEX idx_session             (session_id),
-    INDEX idx_updated             (updated_at)
-)`
-
-// tenantMemorySchemaPostgres is the PostgreSQL schema with pgvector support.
-const tenantMemorySchemaPostgres = `CREATE TABLE IF NOT EXISTS memories (
-    id              VARCHAR(36)     PRIMARY KEY,
-    content         TEXT            NOT NULL,
-    source          VARCHAR(100),
-    tags            JSONB,
-    metadata        JSONB,
-    embedding       vector(1536)    NULL,
-    memory_type     VARCHAR(20)     NOT NULL DEFAULT 'pinned',
-    agent_id        VARCHAR(100)    NULL,
-    session_id      VARCHAR(100)    NULL,
-    state           VARCHAR(20)     NOT NULL DEFAULT 'active',
-    version         INT             DEFAULT 1,
-    updated_by      VARCHAR(100),
-    superseded_by   VARCHAR(36)     NULL,
-    created_at      TIMESTAMPTZ     DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ     DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_memory_type ON memories(memory_type);
-CREATE INDEX IF NOT EXISTS idx_source ON memories(source);
-CREATE INDEX IF NOT EXISTS idx_state ON memories(state);
-CREATE INDEX IF NOT EXISTS idx_agent ON memories(agent_id);
-CREATE INDEX IF NOT EXISTS idx_session ON memories(session_id);
-CREATE INDEX IF NOT EXISTS idx_updated ON memories(updated_at);
-CREATE OR REPLACE FUNCTION update_updated_at() RETURNS TRIGGER AS $$ BEGIN NEW.updated_at = NOW(); RETURN NEW; END; $$ LANGUAGE plpgsql;
-DROP TRIGGER IF EXISTS trg_memories_updated ON memories;
-CREATE TRIGGER trg_memories_updated BEFORE UPDATE ON memories FOR EACH ROW EXECUTE FUNCTION update_updated_at();
-`
-
-// tenantMemorySchemaDB9Base is the db9/PostgreSQL schema template with auto-embedding support.
-const tenantMemorySchemaDB9Base = `CREATE TABLE IF NOT EXISTS memories (
-    id              VARCHAR(36)     PRIMARY KEY,
-    content         TEXT            NOT NULL,
-    source          VARCHAR(100),
-    tags            JSONB,
-    metadata        JSONB,
-    %s
-    memory_type     VARCHAR(20)     NOT NULL DEFAULT 'pinned',
-    agent_id        VARCHAR(100)    NULL,
-    session_id      VARCHAR(100)    NULL,
-    state           VARCHAR(20)     NOT NULL DEFAULT 'active',
-    version         INT             DEFAULT 1,
-    updated_by      VARCHAR(100),
-    superseded_by   VARCHAR(36)     NULL,
-    created_at      TIMESTAMPTZ     DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ     DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_memory_type ON memories(memory_type);
-CREATE INDEX IF NOT EXISTS idx_memory_source ON memories(source);
-CREATE INDEX IF NOT EXISTS idx_memory_state ON memories(state);
-CREATE INDEX IF NOT EXISTS idx_memory_agent ON memories(agent_id);
-CREATE INDEX IF NOT EXISTS idx_memory_session ON memories(session_id);
-CREATE INDEX IF NOT EXISTS idx_memory_updated ON memories(updated_at);
-CREATE OR REPLACE FUNCTION update_updated_at() RETURNS TRIGGER AS $$ BEGIN NEW.updated_at = NOW(); RETURN NEW; END; $$ LANGUAGE plpgsql;
-DROP TRIGGER IF EXISTS trg_memories_updated ON memories;
-CREATE TRIGGER trg_memories_updated BEFORE UPDATE ON memories FOR EACH ROW EXECUTE FUNCTION update_updated_at();
-`
-
-func buildMemorySchema(autoModel string, autoDims int) string {
-	var embeddingCol string
-	if autoModel != "" {
-		sanitizedModel := strings.ReplaceAll(autoModel, "'", "''")
-		embeddingCol = fmt.Sprintf(
-			`embedding VECTOR(%d) GENERATED ALWAYS AS (EMBED_TEXT('%s', content, '{"dimensions": %d}')) STORED,`,
-			autoDims, sanitizedModel, autoDims,
-		)
-	} else {
-		embeddingCol = `embedding VECTOR(1536) NULL,`
-	}
-	return fmt.Sprintf(tenantMemorySchemaBase, embeddingCol)
-}
-
-func buildDB9MemorySchema(autoModel string, autoDims int) string {
-	var embeddingCol string
-	if autoModel != "" {
-		sanitizedModel := strings.ReplaceAll(autoModel, "'", "''")
-		embeddingCol = fmt.Sprintf(
-			`embedding VECTOR(%d) GENERATED ALWAYS AS (EMBED_TEXT('%s', content, '{"dimensions": %d}')) STORED,`,
-			autoDims, sanitizedModel, autoDims,
-		)
-	} else {
-		embeddingCol = `embedding VECTOR(1536) NULL,`
-	}
-	return fmt.Sprintf(tenantMemorySchemaDB9Base, embeddingCol)
-}
 
 type TenantService struct {
 	tenants     repository.TenantRepo
@@ -181,13 +68,7 @@ func (s *TenantService) Provision(ctx context.Context) (*ProvisionResult, error)
 	t0 := time.Now()
 	info, err := s.provisioner.Provision(ctx)
 	elapsed := time.Since(t0)
-	// Determine provider type for metrics
-	providerType := "unknown"
-	if _, ok := s.provisioner.(*tenant.TiDBCloudProvisioner); ok {
-		providerType = "tidb_cloud_starter"
-	} else if _, ok := s.provisioner.(*tenant.ZeroProvisioner); ok {
-		providerType = "tidb_zero"
-	}
+	providerType := info.Provider
 	s.logger.Info("provision step", "step", "cluster_acquire", "provider", providerType, "duration_ms", elapsed.Milliseconds())
 	metrics.ProvisionStepDuration.WithLabelValues("cluster_acquire_" + providerType).Observe(elapsed.Seconds())
 	if err != nil {
@@ -197,6 +78,7 @@ func (s *TenantService) Provision(ctx context.Context) (*ProvisionResult, error)
 
 	tenantID := info.ID
 
+	// Build tenant record
 	t := &domain.Tenant{
 		ID:            tenantID,
 		Name:          tenantID,
@@ -206,7 +88,7 @@ func (s *TenantService) Provision(ctx context.Context) (*ProvisionResult, error)
 		DBPassword:    info.Password,
 		DBName:        info.DBName,
 		DBTLS:         true,
-		Provider:      providerType,
+		Provider:      info.Provider,
 		ClusterID:     info.ID,
 		Status:        domain.TenantProvisioning,
 		SchemaVersion: 0,
@@ -229,26 +111,12 @@ func (s *TenantService) Provision(ctx context.Context) (*ProvisionResult, error)
 	}
 
 	t0 = time.Now()
-	// For TiDB Cloud: verify schema exists (pre-configured)
-	// For Zero: execute DDL to create schema
-	if _, ok := s.provisioner.(*tenant.TiDBCloudProvisioner); ok {
-		// TiDB Cloud: verify only
-		if err := s.provisioner.InitSchema(ctx, db); err != nil {
-			if s.logger != nil {
-				s.logger.Error("tenant schema verification failed", "tenant_id", tenantID, "err", err)
-			}
-			metrics.ProvisionTotal.WithLabelValues("error").Inc()
-			return nil, fmt.Errorf("verify tenant schema: %w", err)
+	if err := s.provisioner.InitSchema(ctx, db); err != nil {
+		if s.logger != nil {
+			s.logger.Error("tenant schema init failed", "tenant_id", tenantID, "err", err)
 		}
-	} else {
-		// Zero or other: execute DDL
-		if err := s.initSchema(ctx, t, db); err != nil {
-			if s.logger != nil {
-				s.logger.Error("tenant schema init failed", "tenant_id", tenantID, "err", err)
-			}
-			metrics.ProvisionTotal.WithLabelValues("error").Inc()
-			return nil, fmt.Errorf("init tenant schema: %w", err)
-		}
+		metrics.ProvisionTotal.WithLabelValues("error").Inc()
+		return nil, fmt.Errorf("init tenant schema: %w", err)
 	}
 	elapsed = time.Since(t0)
 	s.logger.Info("provision step", "step", "init_schema", "duration_ms", elapsed.Milliseconds())
@@ -310,97 +178,6 @@ func (s *TenantService) GetInfo(ctx context.Context, tenantID string) (*domain.T
 		MemoryCount: count,
 		CreatedAt:   t.CreatedAt,
 	}, nil
-}
-
-func (s *TenantService) initSchema(ctx context.Context, t *domain.Tenant, db *sql.DB) error {
-	switch s.pool.Backend() {
-	case "postgres":
-		// PostgreSQL path: enable pgvector, then apply PG-compatible schema.
-		t0 := time.Now()
-		if _, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
-			return fmt.Errorf("init tenant schema: pgvector extension: %w", err)
-		}
-		elapsed := time.Since(t0)
-		s.logger.Info("provision step", "step", "init_schema_pgvector_extension", "duration_ms", elapsed.Milliseconds())
-		metrics.ProvisionStepDuration.WithLabelValues("init_schema_pgvector_extension").Observe(elapsed.Seconds())
-
-		t0 = time.Now()
-		if _, err := db.ExecContext(ctx, tenantMemorySchemaPostgres); err != nil {
-			return fmt.Errorf("init tenant schema: memories: %w", err)
-		}
-		elapsed = time.Since(t0)
-		s.logger.Info("provision step", "step", "init_schema_create_table", "duration_ms", elapsed.Milliseconds())
-		metrics.ProvisionStepDuration.WithLabelValues("init_schema_create_table").Observe(elapsed.Seconds())
-		return nil
-	case "db9":
-		// db9 path: enable embedding + vector extensions, then apply db9-specific schema.
-		t0 := time.Now()
-		if _, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS embedding`); err != nil {
-			s.logger.Warn("db9 embedding extension not available", "error", err)
-			// Continue anyway - embedding extension may not be required for all setups
-		}
-		if _, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
-			return fmt.Errorf("init tenant schema: vector extension: %w", err)
-		}
-		elapsed := time.Since(t0)
-		s.logger.Info("provision step", "step", "init_schema_extensions", "duration_ms", elapsed.Milliseconds())
-		metrics.ProvisionStepDuration.WithLabelValues("init_schema_extensions").Observe(elapsed.Seconds())
-
-		t0 = time.Now()
-		if _, err := db.ExecContext(ctx, buildDB9MemorySchema(s.autoModel, s.autoDims)); err != nil {
-			return fmt.Errorf("init tenant schema: memories: %w", err)
-		}
-		elapsed = time.Since(t0)
-		s.logger.Info("provision step", "step", "init_schema_create_table", "duration_ms", elapsed.Milliseconds())
-		metrics.ProvisionStepDuration.WithLabelValues("init_schema_create_table").Observe(elapsed.Seconds())
-
-		// Add HNSW index for vector search (supports auto and client-side embeddings)
-		t0 = time.Now()
-		_, err := db.ExecContext(ctx,
-			`CREATE INDEX IF NOT EXISTS idx_memory_embedding ON memories USING hnsw (embedding vector_cosine_ops)`)
-		elapsed = time.Since(t0)
-		if err != nil && !isIndexExistsError(err) {
-			return fmt.Errorf("init tenant schema: hnsw index: %w", err)
-		}
-		s.logger.Info("provision step", "step", "init_schema_hnsw_index", "duration_ms", elapsed.Milliseconds())
-		metrics.ProvisionStepDuration.WithLabelValues("init_schema_hnsw_index").Observe(elapsed.Seconds())
-		return nil
-	case "tidb":
-		t0 := time.Now()
-		if _, err := db.ExecContext(ctx, buildMemorySchema(s.autoModel, s.autoDims)); err != nil {
-			return fmt.Errorf("init tenant schema: memories: %w", err)
-		}
-		elapsed := time.Since(t0)
-		s.logger.Info("provision step", "step", "init_schema_create_table", "duration_ms", elapsed.Milliseconds())
-		metrics.ProvisionStepDuration.WithLabelValues("init_schema_create_table").Observe(elapsed.Seconds())
-
-		if s.autoModel != "" {
-			t0 = time.Now()
-			_, err := db.ExecContext(ctx,
-				`ALTER TABLE memories ADD VECTOR INDEX idx_cosine ((VEC_COSINE_DISTANCE(embedding))) ADD_COLUMNAR_REPLICA_ON_DEMAND`)
-			elapsed = time.Since(t0)
-			if err != nil && !isIndexExistsError(err) {
-				return fmt.Errorf("init tenant schema: vector index: %w", err)
-			}
-			s.logger.Info("provision step", "step", "init_schema_vector_index", "duration_ms", elapsed.Milliseconds())
-			metrics.ProvisionStepDuration.WithLabelValues("init_schema_vector_index").Observe(elapsed.Seconds())
-		}
-
-		if s.ftsEnabled {
-			t0 = time.Now()
-			_, err := db.ExecContext(ctx,
-				`ALTER TABLE memories ADD FULLTEXT INDEX idx_fts_content (content) WITH PARSER MULTILINGUAL ADD_COLUMNAR_REPLICA_ON_DEMAND`)
-			elapsed = time.Since(t0)
-			if err != nil && !isIndexExistsError(err) {
-				return fmt.Errorf("init tenant schema: fulltext index: %w", err)
-			}
-			s.logger.Info("provision step", "step", "init_schema_fts_index", "duration_ms", elapsed.Milliseconds())
-			metrics.ProvisionStepDuration.WithLabelValues("init_schema_fts_index").Observe(elapsed.Seconds())
-		}
-		return nil
-	default:
-		return fmt.Errorf("init tenant schema: unsupported backend %q", s.pool.Backend())
-	}
 }
 
 func isIndexExistsError(err error) bool {

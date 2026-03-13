@@ -78,6 +78,7 @@ func (p *TiDBCloudProvisioner) Provision(ctx context.Context) (*ClusterInfo, err
 		Username: result.UserPrefix + ".root",
 		Password: password,
 		DBName:   "test",
+		Provider: "tidb_cloud_starter",
 	}, nil
 }
 

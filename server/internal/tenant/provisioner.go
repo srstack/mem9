@@ -19,4 +19,5 @@ type ClusterInfo struct {
 	Username string
 	Password string
 	DBName   string
+	Provider string // "tidb_zero" or "tidb_cloud_starter"
 }

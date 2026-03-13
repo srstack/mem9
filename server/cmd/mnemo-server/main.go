@@ -86,7 +86,7 @@ func main() {
 	var provisioner tenant.Provisioner
 	if cfg.TiDBZeroEnabled && cfg.DBBackend == "tidb" {
 		// Zero mode (explicit toggle takes precedence)
-		provisioner = tenant.NewZeroProvisioner(cfg.TiDBZeroAPIURL)
+		provisioner = tenant.NewZeroProvisioner(cfg.TiDBZeroAPIURL, cfg.DBBackend, cfg.EmbedAutoModel, cfg.EmbedAutoDims, cfg.FTSEnabled)
 		logger.Info("using TiDB Zero provisioner")
 	} else if cfg.TiDBZeroEnabled {
 		logger.Warn("TiDB Zero provisioning is only supported with tidb backend; disabling auto-provisioning", "backend", cfg.DBBackend)
