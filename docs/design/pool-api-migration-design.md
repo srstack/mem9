@@ -8,12 +8,12 @@ Migrate the tenant provisioning mechanism from **TiDB Zero API** to **TiDB Cloud
 
 - **TiDB Zero** provides free temporary clusters with expiration and requires user claim
 - **TiDB Cloud Starter Pool** provides permanent pre-provisioned clusters ready for immediate use
-- Pool API uses HTTP Digest Authentication and allows setting custom root password
-- Pre-configured schema in Pool clusters eliminates the need for application-level schema initialization
+- TiDB Cloud Pool API uses HTTP Digest Authentication and allows setting custom root password
+- Pre-configured schema in TiDB Cloud clusters eliminates the need for application-level schema initialization
 
 ## API Comparison
 
-| Aspect | TiDB Zero | TiDB Cloud Pool |
+| Aspect | TiDB Zero | TiDB Cloud Starter Pool |
 |--------|-----------|-----------------|
 | Endpoint | `https://zero.tidbapi.com/v1alpha1/instances` | `https://serverless.tidbapi.com/v1beta1/clusters:takeoverFromPool` |
 | Authentication | None | HTTP Digest Auth (`--user 'PUBLIC_KEY:PRIVATE_KEY'`) |
@@ -25,10 +25,10 @@ Migrate the tenant provisioning mechanism from **TiDB Zero API** to **TiDB Cloud
 
 ## Environment Variables
 
-### New Variables (Pool Mode)
+### New Variables (TiDB Cloud Pool Mode)
 
 ```bash
-# Required for Pool mode
+# Required for TiDB Cloud Pool mode
 TIDBCLOUD_API_KEY         # Digest Auth App Key (Public Key)
 TIDBCLOUD_API_SECRET      # Digest Auth App Secret (Private Key)
 
@@ -64,7 +64,7 @@ type Config struct {
 
 ## Architecture: Provisioner Interface
 
-Introduce a `Provisioner` interface to abstract both Zero and Pool implementations:
+Introduce a `Provisioner` interface to abstract both Zero and TiDB Cloud Pool implementations:
 
 ```go
 // server/internal/tenant/provisioner.go
@@ -126,7 +126,7 @@ func (c *TiDBCloudProvisioner) Provision(ctx context.Context) (*ClusterInfo, err
     // 1. Generate random password (16 chars)
     password := generateRandomPassword(16)
     
-    // 2. Call Pool API with Digest Auth
+    // 2. Call TiDB Cloud Pool API with Digest Auth
     // curl --digest --user 'PUBLIC_KEY:PRIVATE_KEY' \
     //   -X POST https://serverless.tidbapi.com/v1beta1/clusters:takeoverFromPool \
     //   -d '{"pool_id":"2","root_password":"xxx"}'
@@ -135,7 +135,7 @@ func (c *TiDBCloudProvisioner) Provision(ctx context.Context) (*ClusterInfo, err
 }
 
 func (c *TiDBCloudProvisioner) InitSchema(ctx context.Context, db *sql.DB) error {
-    // Pool clusters have pre-configured schema, no-op
+    // TiDB Cloud clusters have pre-configured schema, no-op
     return nil
 }
 ```
@@ -188,7 +188,7 @@ func (s *TenantService) Provision(ctx context.Context) (*ProvisionResult, error)
     // 3. Get DB connection from pool
     db, err := s.pool.Get(ctx, tenant.ID, tenant.DSN())
     
-    // 4. Call Provisioner.InitSchema() (Zero: DDL, Pool: no-op)
+    // 4. Call Provisioner.InitSchema() (Zero: DDL, TiDB Cloud: no-op)
     if err := s.provisioner.InitSchema(ctx, db); err != nil {
         // Handle failure - tenant stays in "provisioning" for recovery
         return nil, err
@@ -204,7 +204,7 @@ func (s *TenantService) Provision(ctx context.Context) (*ProvisionResult, error)
 
 ### 4. Mode Selection Logic
 
-**Priority: Explicit Zero toggle > Pool auto-detection**
+**Priority: Explicit Zero toggle > TiDB Cloud auto-detection**
 
 ```go
 // main.go
@@ -214,7 +214,7 @@ if cfg.TiDBZeroEnabled {
     // Zero mode (explicit toggle takes precedence)
     provisioner = tenant.NewZeroProvisioner(cfg.TiDBZeroAPIURL)
 } else if os.Getenv("TIDBCLOUD_API_KEY") != "" && os.Getenv("TIDBCLOUD_API_SECRET") != "" {
-    // Pool mode
+    // TiDB Cloud Pool mode
     provisioner = tenant.NewTiDBCloudProvisioner(
         cfg.TiDBCloudAPIURL,
         os.Getenv("TIDBCLOUD_API_KEY"),
@@ -228,12 +228,12 @@ if cfg.TiDBZeroEnabled {
 tenantSvc := service.NewTenantService(tenantRepo, provisioner, tenantPool, ...)
 ```
 
-## Pool API Response Contract
+## TiDB Cloud Pool API Response Contract
 
 ### Request
 
 ```bash
-POST https://serverless.tidbapi.com/v1beta1/clusters:takeoverFromPool
+POST https://serverless.tidbapi.com/v1beta1/clusters:takeoverFromPool  # TiDB Cloud Pool API endpoint
 Content-Type: application/json
 Authorization: Digest ...
 
@@ -288,8 +288,8 @@ type Tenant struct {
     DBTLS          bool
     Provider       string     // "tidb_zero" | "tidb_cloud_starter"
     ClusterID      string
-    ClaimURL       string     // Keep for Zero compatibility, empty for Pool
-    ClaimExpiresAt *time.Time // Keep for Zero compatibility, nil for Pool
+    ClaimURL       string     // Keep for Zero compatibility, empty for TiDB Cloud
+    ClaimExpiresAt *time.Time // Keep for Zero compatibility, nil for TiDB Cloud
     Status         TenantStatus
     SchemaVersion  int
     CreatedAt      time.Time
@@ -297,14 +297,14 @@ type Tenant struct {
 }
 ```
 
-**Note:** `ClaimURL` and `ClaimExpiresAt` are kept for backward compatibility with existing Zero tenants. Pool tenants will have empty values. Code using these fields must check `Provider` first.
+**Note:** `ClaimURL` and `ClaimExpiresAt` are kept for backward compatibility with existing Zero tenants. TiDB Cloud tenants will have empty values. Code using these fields must check `Provider` first.
 
-**Lifecycle Note:** Both Zero and Pool tenants follow the same lifecycle: created with `Status: provisioning`, then transitioned to `active` after `InitSchema()` succeeds. For Pool tenants, `InitSchema()` is a no-op since schema is pre-configured, but the state transition ensures consistent recovery semantics.
+**Lifecycle Note:** Both Zero and TiDB Cloud tenants follow the same lifecycle: created with `Status: provisioning`, then transitioned to `active` after `InitSchema()` succeeds. For TiDB Cloud tenants, `InitSchema()` is a no-op since schema is pre-configured, but the state transition ensures consistent recovery semantics.
 
 ## Migration Path
 
 1. **Phase 1**: Deploy code with both provisioners supported
-2. **Phase 2**: Configure `TIDBCLOUD_API_KEY` to switch to Pool mode
+2. **Phase 2**: Configure `TIDBCLOUD_API_KEY` to switch to TiDB Cloud mode
 3. **Phase 3**: (Optional) Disable Zero mode by setting `MNEMO_TIDB_ZERO_ENABLED=false`
 4. **Phase 4**: (Future) Remove Zero mode support entirely
 
@@ -312,7 +312,7 @@ type Tenant struct {
 
 | Scenario | Behavior |
 |----------|----------|
-| Pool API returns error | Return error, no tenant record created, caller gets HTTP 503 |
+| TiDB Cloud API returns error | Return error, no tenant record created, caller gets HTTP 503 |
 | Cluster acquired but `tenants.Create` fails | Cluster consumed but unregistered - logged for manual cleanup |
 | `InitSchema` fails | Tenant stays in `"provisioning"` status for retry/compensation |
 
@@ -326,16 +326,16 @@ type Tenant struct {
 ## Testing Strategy
 
 1. **Unit tests** for Digest Auth implementation (required)
-2. **Mock tests** for TiDBCloudProvisioner with fake Pool API server
+2. **Mock tests** for TiDBCloudProvisioner with fake TiDB Cloud Pool API server
 3. **Integration tests** for ZeroProvisioner (existing)
 4. **Fallback tests** (verify mode selection logic; note: fallback is at config time, not runtime)
-5. **End-to-end provisioning test** with real credentials in staging
+5. **End-to-end provisioning test** with real TiDB Cloud Pool API credentials in staging
 
 ## Related Files to Modify
 
 - `server/internal/config/config.go` - Add new config fields
 - `server/internal/tenant/provisioner.go` - New interface definition
-- `server/internal/tenant/starter.go` - New TiDBCloudProvisioner implementation
+- `server/internal/tenant/starter.go` - New TiDBCloudProvisioner implementation for TiDB Cloud Pool API
 - `server/internal/tenant/zero.go` - Refactor to ZeroProvisioner
 - `server/internal/service/tenant.go` - Use Provisioner interface
 - `server/internal/domain/types.go` - No changes (keep existing fields)
