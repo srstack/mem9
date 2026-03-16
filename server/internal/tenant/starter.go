@@ -94,9 +94,11 @@ func (p *TiDBCloudProvisioner) Provision(ctx context.Context) (*ClusterInfo, err
 	}, nil
 }
 
+const StarterProvisionerType = "tidb_cloud_starter"
+
 // ProviderType returns the provider identifier.
 func (p *TiDBCloudProvisioner) ProviderType() string {
-	return "tidb_cloud_starter"
+	return StarterProvisionerType
 }
 
 // InitSchema for TiDB Cloud Pool is intentionally a no-op.
@@ -272,4 +274,3 @@ func generateRandomPassword(length int) (string, error) {
 	}
 	return string(b), nil
 }
-

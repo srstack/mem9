@@ -28,15 +28,15 @@ func setupTiDBCloudEnv(t *testing.T) func() {
 func TestTiDBCloudProvisioner_Provision_Success(t *testing.T) {
 	cleanup := setupTiDBCloudEnv(t)
 	defer cleanup()
-	
+
 	// Track if the second request has proper auth header
 	var authHeader string
-	
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST, got %s", r.Method)
 		}
-		
+
 		auth := r.Header.Get("Authorization")
 		if auth == "" {
 			// First request - return 401 with Digest challenge
@@ -44,13 +44,13 @@ func TestTiDBCloudProvisioner_Provision_Success(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		
+
 		// Second request - verify Digest auth
 		authHeader = auth
 		if !strings.HasPrefix(auth, "Digest ") {
 			t.Errorf("expected Digest auth, got: %s", auth)
 		}
-		
+
 		// Verify required Digest fields are present
 		requiredFields := []string{"username=", "realm=", "nonce=", "uri=", "response="}
 		for _, field := range requiredFields {
@@ -58,20 +58,20 @@ func TestTiDBCloudProvisioner_Provision_Success(t *testing.T) {
 				t.Errorf("auth header missing %s: %s", field, auth)
 			}
 		}
-		
+
 		// Verify request body
 		var reqBody map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
 		}
-		
+
 		if reqBody["pool_id"] != "test-pool" {
 			t.Errorf("expected pool_id=test-pool, got %s", reqBody["pool_id"])
 		}
 		if reqBody["root_password"] == "" {
 			t.Error("root_password is empty")
 		}
-		
+
 		// Return successful response
 		resp := map[string]interface{}{
 			"clusterId": "cluster-123",
@@ -87,17 +87,17 @@ func TestTiDBCloudProvisioner_Provision_Success(t *testing.T) {
 		json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
-	
+
 	// Create provisioner
 	p := NewTiDBCloudProvisioner(server.URL, "test-pool")
-	
+
 	ctx := context.Background()
 	info, err := p.Provision(ctx)
-	
+
 	if err != nil {
 		t.Fatalf("Provision failed: %v", err)
 	}
-	
+
 	// ID should be a generated UUID (not the raw cluster ID)
 	if info.ClusterID != "cluster-123" {
 		t.Errorf("expected ClusterID=cluster-123, got %s", info.ClusterID)
@@ -129,28 +129,28 @@ func TestTiDBCloudProvisioner_Provision_Success(t *testing.T) {
 func TestTiDBCloudProvisioner_Provision_APIError(t *testing.T) {
 	cleanup := setupTiDBCloudEnv(t)
 	defer cleanup()
-	
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "" {
 			w.Header().Set("WWW-Authenticate", `Digest realm="tidbcloud", nonce="abc123", qop="auth"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		
+
 		// Return error
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(`{"error": "pool exhausted"}`))
 	}))
 	defer server.Close()
-	
+
 	p := NewTiDBCloudProvisioner(server.URL, "pool")
 	ctx := context.Background()
-	
+
 	_, err := p.Provision(ctx)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	
+
 	if !strings.Contains(err.Error(), "pool exhausted") {
 		t.Errorf("expected error to contain 'pool exhausted', got: %v", err)
 	}
@@ -159,8 +159,8 @@ func TestTiDBCloudProvisioner_Provision_APIError(t *testing.T) {
 // TestTiDBCloudProvisioner_ProviderType tests the provider type
 func TestTiDBCloudProvisioner_ProviderType(t *testing.T) {
 	p := &TiDBCloudProvisioner{}
-	if p.ProviderType() != "tidb_cloud_starter" {
-		t.Errorf("expected tidb_cloud_starter, got %s", p.ProviderType())
+	if p.ProviderType() != StarterProvisionerType {
+		t.Errorf("expected %s, got %s", StarterProvisionerType, p.ProviderType())
 	}
 }
 
@@ -168,9 +168,9 @@ func TestTiDBCloudProvisioner_ProviderType(t *testing.T) {
 func TestTiDBCloudProvisioner_InitSchema(t *testing.T) {
 	cleanup := setupTiDBCloudEnv(t)
 	defer cleanup()
-	
+
 	p := NewTiDBCloudProvisioner("http://localhost", "pool")
-	
+
 	// InitSchema should return nil even with nil db (it's a no-op)
 	err := p.InitSchema(context.Background(), nil)
 	if err != nil {
@@ -187,7 +187,7 @@ func TestZeroProvisioner_Provision_Success(t *testing.T) {
 		if r.URL.Path != "/instances" {
 			t.Errorf("expected path /instances, got %s", r.URL.Path)
 		}
-		
+
 		// Verify request body
 		var reqBody map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
@@ -196,7 +196,7 @@ func TestZeroProvisioner_Provision_Success(t *testing.T) {
 		if reqBody["tag"] != "mem9s" {
 			t.Errorf("expected tag=mem9s, got %s", reqBody["tag"])
 		}
-		
+
 		// Return successful response
 		resp := map[string]interface{}{
 			"instance": map[string]interface{}{
@@ -217,15 +217,15 @@ func TestZeroProvisioner_Provision_Success(t *testing.T) {
 		json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
-	
+
 	p := NewZeroProvisioner(server.URL, "tidb", "", 0, false)
 	ctx := context.Background()
-	
+
 	info, err := p.Provision(ctx)
 	if err != nil {
 		t.Fatalf("Provision failed: %v", err)
 	}
-	
+
 	if info.ID != "zero-123" {
 		t.Errorf("expected ID=zero-123, got %s", info.ID)
 	}
@@ -264,10 +264,10 @@ func TestZeroProvisioner_Provision_APIError(t *testing.T) {
 		w.Write([]byte(`{"error": "service unavailable"}`))
 	}))
 	defer server.Close()
-	
+
 	p := NewZeroProvisioner(server.URL, "tidb", "", 0, false)
 	ctx := context.Background()
-	
+
 	_, err := p.Provision(ctx)
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -287,7 +287,7 @@ func TestZeroProvisioner_InitSchema_InvalidBackend(t *testing.T) {
 	// Current implementation only supports "tidb" backend
 	// For other backends, it will fail when trying to execute DDL
 	p := NewZeroProvisioner("http://localhost", "postgres", "", 0, false)
-	
+
 	// nil db should cause an error (not panic)
 	err := p.InitSchema(context.Background(), nil)
 	if err == nil {
@@ -306,11 +306,11 @@ func TestZeroProvisioner_InitSchema_Success(t *testing.T) {
 // TestParseDigestChallenge tests the challenge parser
 func TestParseDigestChallenge(t *testing.T) {
 	tests := []struct {
-		name          string
-		header        string
-		wantNonce     string
-		wantRealm     string
-		wantQop       string
+		name      string
+		header    string
+		wantNonce string
+		wantRealm string
+		wantQop   string
 	}{
 		{
 			name:      "standard challenge",
@@ -355,11 +355,11 @@ func TestParseDigestChallenge(t *testing.T) {
 			wantQop:   "",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			nonce, realm, qop := parseDigestChallenge(tt.header)
-			
+
 			if nonce != tt.wantNonce {
 				t.Errorf("nonce = %q, want %q", nonce, tt.wantNonce)
 			}
@@ -382,12 +382,12 @@ func TestBuildDigestAuth(t *testing.T) {
 	nonce := "abc123"
 	realm := "tidbcloud"
 	qop := "auth"
-	
+
 	auth, err := buildDigestAuth(username, password, method, uri, nonce, realm, qop)
 	if err != nil {
 		t.Fatalf("buildDigestAuth failed: %v", err)
 	}
-	
+
 	// Verify it contains required fields
 	required := []string{
 		"Digest",
@@ -400,13 +400,13 @@ func TestBuildDigestAuth(t *testing.T) {
 		"cnonce=",
 		"response=",
 	}
-	
+
 	for _, field := range required {
 		if !strings.Contains(auth, field) {
 			t.Errorf("auth missing %q: %s", field, auth)
 		}
 	}
-	
+
 	// Verify response is a hex MD5 hash (32 chars)
 	// Extract response value
 	parts := strings.Split(auth, ",")
@@ -433,7 +433,7 @@ func TestBuildDigestAuth_NoQop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildDigestAuth failed: %v", err)
 	}
-	
+
 	// Without qop, should not have cnonce, nc, or qop fields
 	if strings.Contains(auth, "qop=") {
 		t.Error("auth should not contain qop when empty")
@@ -497,7 +497,7 @@ func TestTokenizeDigestHeader(t *testing.T) {
 			expected: []string{`realm="unfinished, nonce="123"`},
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tokenizeDigestHeader(tt.input)
@@ -523,11 +523,11 @@ func TestUnquote(t *testing.T) {
 		{`"value"`, "value"},
 		{`""`, ""},
 		{`noquotes`, "noquotes"},
-		{`"only opening`, "only opening"},  // Trim removes leading quote
+		{`"only opening`, "only opening"}, // Trim removes leading quote
 		{`only closing"`, "only closing"},
 		{`"nested"quotes"`, `nested"quotes`},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			got := unquote(tt.input)
@@ -549,7 +549,7 @@ func TestGenerateRandomPassword(t *testing.T) {
 		if len(pwd) != length {
 			t.Errorf("len = %d, want %d", len(pwd), length)
 		}
-		
+
 		// Verify charset (alphanumeric only)
 		for _, c := range pwd {
 			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
@@ -557,7 +557,7 @@ func TestGenerateRandomPassword(t *testing.T) {
 			}
 		}
 	}
-	
+
 	// Test uniqueness (should rarely fail with 32-byte passwords)
 	seen := make(map[string]bool)
 	for i := 0; i < 100; i++ {
@@ -580,7 +580,7 @@ func TestMD5Hash(t *testing.T) {
 		{"hello", "5d41402abc4b2a76b9719d911017c592"},
 		{"username:realm:password", "66999343281b2624585fd58cc9d36dfc"},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			got := md5Hash(tt.input)
@@ -597,19 +597,19 @@ func TestGenerateNonce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateNonce failed: %v", err)
 	}
-	
+
 	// generateNonce creates 8 bytes = 16 hex characters
 	if len(nonce1) != 16 {
 		t.Errorf("nonce length = %d, want 16", len(nonce1))
 	}
-	
+
 	// Verify hex encoding
 	for _, c := range nonce1 {
 		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
 			t.Errorf("nonce contains non-hex char: %c", c)
 		}
 	}
-	
+
 	// Verify uniqueness
 	nonce2, _ := generateNonce()
 	if nonce1 == nonce2 {
@@ -621,7 +621,7 @@ func TestGenerateNonce(t *testing.T) {
 func TestDigestAuthRoundTrip(t *testing.T) {
 	// This test verifies that the digest auth we generate can be validated
 	// using the same algorithm that servers use
-	
+
 	username := "testuser"
 	password := "testpass"
 	method := "POST"
@@ -629,16 +629,16 @@ func TestDigestAuthRoundTrip(t *testing.T) {
 	nonce := "servernonce123"
 	realm := "testrealm"
 	qop := "auth"
-	
+
 	auth, err := buildDigestAuth(username, password, method, uri, nonce, realm, qop)
 	if err != nil {
 		t.Fatalf("buildDigestAuth failed: %v", err)
 	}
-	
+
 	// Parse the generated auth header to extract values
 	auth = strings.TrimPrefix(auth, "Digest ")
 	fields := make(map[string]string)
-	
+
 	// Parse key="value" pairs
 	parts := tokenizeDigestHeader(auth)
 	for _, part := range parts {
@@ -649,19 +649,19 @@ func TestDigestAuthRoundTrip(t *testing.T) {
 			fields[key] = val
 		}
 	}
-	
+
 	// Verify HA1 = MD5(username:realm:password)
 	expectedHA1 := md5Hash(fmt.Sprintf("%s:%s:%s", username, realm, password))
-	
+
 	// Extract cnonce and nc from fields
 	cnonce := fields["cnonce"]
 	nc := fields["nc"]
-	
+
 	// Recalculate response
 	path := "/api/test" // uri without host
 	ha2 := md5Hash(fmt.Sprintf("%s:%s", method, path))
 	expectedResponse := md5Hash(fmt.Sprintf("%s:%s:%s:%s:%s:%s", expectedHA1, nonce, nc, cnonce, qop, ha2))
-	
+
 	if fields["response"] != expectedResponse {
 		t.Errorf("response mismatch:\ngot:      %s\nexpected: %s", fields["response"], expectedResponse)
 	}
