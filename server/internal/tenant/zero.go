@@ -153,9 +153,11 @@ func (p *ZeroProvisioner) Provision(ctx context.Context) (*ClusterInfo, error) {
 	}, nil
 }
 
+const ZeroProvisionerType = "zero"
+
 // ProviderType returns the provider identifier.
 func (p *ZeroProvisioner) ProviderType() string {
-	return "tidb_zero"
+	return ZeroProvisionerType
 }
 
 // InitSchema executes DDL to create the schema for Zero clusters.
