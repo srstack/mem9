@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -58,6 +59,14 @@ type Config struct {
 	// Upload directory for file storage.
 	// Files are stored at {UploadDir}/{tenantID}/{agentID}/{filename}.
 	UploadDir string
+
+	// Encryption configuration for sensitive data like database passwords.
+	// EncryptType can be "plain" (default), "md5", or "kms".
+	EncryptType string
+	// EncryptKey is the encryption key or KMS key ID.
+	// For "md5": the key string used to derive the AES key.
+	// For "kms": the KMS key ID, ARN, alias name, or alias ARN.
+	EncryptKey string `json:"-"` // Never serialize to JSON
 }
 
 func Load() (*Config, error) {
@@ -94,6 +103,8 @@ func Load() (*Config, error) {
 		UploadDir:             envOr("MNEMO_UPLOAD_DIR", "./uploads"),
 		FTSEnabled:            envBool("MNEMO_FTS_ENABLED", false),
 		WorkerConcurrency:     envInt("MNEMO_WORKER_CONCURRENCY", 5),
+		EncryptType:           envOr("MNEMO_ENCRYPT_TYPE", "plain"),
+		EncryptKey:            os.Getenv("MNEMO_ENCRYPT_KEY"),
 	}
 	// Validate ingest mode.
 	switch cfg.IngestMode {
@@ -155,4 +166,16 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
+}
+
+// LogValue returns a slog.Value with sensitive fields masked.
+// Use this when logging the config to avoid leaking secrets.
+func (c *Config) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("Port", c.Port),
+		slog.String("DBBackend", c.DBBackend),
+		slog.String("EncryptType", c.EncryptType),
+		slog.Bool("EncryptKeyConfigured", c.EncryptKey != ""),
+		// Add other non-sensitive fields as needed
+	)
 }
