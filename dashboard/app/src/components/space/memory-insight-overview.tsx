@@ -96,27 +96,33 @@ type RootBubbleRelationEdge = {
 };
 
 const DRIFT_SEEDS = [
-  { x: 8, y: -5, duration: 18, delay: -3 },
-  { x: -6, y: 7, duration: 20, delay: -9 },
-  { x: 5, y: 9, duration: 22, delay: -12 },
-  { x: -8, y: -4, duration: 17, delay: -6 },
-  { x: 7, y: 4, duration: 21, delay: -15 },
+  { x: 3, y: -10, duration: 12.5, delay: -2.2, rotate: -1.4, scale: 0.018 },
+  { x: -4, y: -12, duration: 14.2, delay: -6.8, rotate: 1.1, scale: 0.016 },
+  { x: 2, y: -8, duration: 11.6, delay: -4.4, rotate: -0.8, scale: 0.014 },
+  { x: -3, y: -11, duration: 13.4, delay: -8.6, rotate: 1.5, scale: 0.019 },
+  { x: 4, y: -9, duration: 15.1, delay: -10.3, rotate: -1.2, scale: 0.017 },
+  { x: -2, y: -13, duration: 12.9, delay: -12.1, rotate: 0.9, scale: 0.015 },
 ];
 
 const BUBBLE_COLOR_PALETTE = [
-  "#6d8fa5",
-  "#b08d57",
-  "#7c6f9b",
-  "#5a9a6b",
-  "#c46a6a",
-  "#8a7a5a",
-  "#a0685a",
-  "#7a8a7a",
+  "#3ea8ff",
+  "#35e6ff",
+  "#9d6cff",
+  "#ff62c7",
+  "#2fe58a",
+  "#ffb347",
+  "#ff6b63",
+  "#74f4d8",
 ] as const;
 
 const ROOT_BUBBLE_RANGE = {
-  compact: { min: 18, max: 40 },
-  desktop: { min: 20, max: 46 },
+  compact: { min: 10, max: 64 },
+  desktop: { min: 12, max: 84 },
+} as const;
+
+const ROOT_BUBBLE_EXPONENT = {
+  compact: 0.94,
+  desktop: 0.9,
 } as const;
 
 const BRANCH_LIMITS = {
@@ -157,11 +163,25 @@ function hashString(value: string): number {
   return Math.abs(hash);
 }
 
+function seededUnitInterval(value: string): number {
+  return (hashString(value) % 10_000) / 9_999;
+}
+
+function seededRange(value: string, min: number, max: number): number {
+  return min + seededUnitInterval(value) * (max - min);
+}
+
+function roundSeed(value: number, digits = 2): number {
+  return Number(value.toFixed(digits));
+}
+
 function bubbleDiameter(count: number, maxCount: number, compact: boolean): number {
   const range = compact ? ROOT_BUBBLE_RANGE.compact : ROOT_BUBBLE_RANGE.desktop;
+  const exponent = compact ? ROOT_BUBBLE_EXPONENT.compact : ROOT_BUBBLE_EXPONENT.desktop;
   const safeMax = Math.max(maxCount, 1);
   const ratio = Math.max(0, Math.min(1, count / safeMax));
-  return Math.round(range.min + ratio * (range.max - range.min));
+  const emphasizedRatio = Math.pow(ratio, exponent);
+  return Math.round(range.min + emphasizedRatio * (range.max - range.min));
 }
 
 function nodeDimensions(
@@ -206,13 +226,27 @@ function nodeDimensions(
   };
 }
 
-function createBubbleDriftStyle(id: string, index: number): CSSProperties {
-  const seed = DRIFT_SEEDS[(hashString(id) + index) % DRIFT_SEEDS.length]!;
+function createBubbleMotionStyle(id: string): CSSProperties {
+  const seed = DRIFT_SEEDS[hashString(id) % DRIFT_SEEDS.length]!;
   return {
     "--insight-drift-x": `${seed.x}px`,
     "--insight-drift-y": `${seed.y}px`,
-    "--insight-drift-duration": `${seed.duration}s`,
+    "--insight-drift-rotate": `${seed.rotate}deg`,
+    "--insight-drift-scale": `${seed.scale}`,
+    "--insight-drift-duration": `${(seed.duration * 0.7).toFixed(2)}s`,
     "--insight-drift-delay": `${seed.delay}s`,
+    "--insight-twinkle-duration": `${roundSeed(seededRange(`${id}:twinkle-duration`, 3.6, 6.8))}s`,
+    "--insight-twinkle-delay": `${roundSeed(-seededRange(`${id}:twinkle-delay`, 0.2, 7.8))}s`,
+    "--insight-twinkle-min-brightness": `${roundSeed(seededRange(`${id}:twinkle-min-brightness`, 0.9, 0.98))}`,
+    "--insight-twinkle-max-brightness": `${roundSeed(seededRange(`${id}:twinkle-max-brightness`, 1.12, 1.26))}`,
+    "--insight-twinkle-min-saturate": `${roundSeed(seededRange(`${id}:twinkle-min-saturate`, 1.04, 1.12))}`,
+    "--insight-twinkle-max-saturate": `${roundSeed(seededRange(`${id}:twinkle-max-saturate`, 1.22, 1.44))}`,
+    "--insight-halo-min-opacity": `${roundSeed(seededRange(`${id}:halo-min-opacity`, 0.24, 0.4))}`,
+    "--insight-halo-max-opacity": `${roundSeed(seededRange(`${id}:halo-max-opacity`, 0.62, 0.88))}`,
+    "--insight-halo-min-scale": `${roundSeed(seededRange(`${id}:halo-min-scale`, 0.82, 0.92))}`,
+    "--insight-halo-max-scale": `${roundSeed(seededRange(`${id}:halo-max-scale`, 1.04, 1.16))}`,
+    "--insight-halo-min-blur": `${roundSeed(seededRange(`${id}:halo-min-blur`, 9.5, 11.8), 1)}px`,
+    "--insight-halo-max-blur": `${roundSeed(seededRange(`${id}:halo-max-blur`, 13.2, 16.8), 1)}px`,
   } as CSSProperties;
 }
 
@@ -456,10 +490,10 @@ function InsightNodeButton({
           ? "absolute isolate text-left transition-[left,top,box-shadow,filter] duration-75"
           : "absolute isolate text-left transition-[left,top,transform,box-shadow,filter] duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
         bubble
-          ? "memory-insight-bubble flex flex-col items-center justify-start bg-transparent p-0 text-center shadow-none ring-0"
+          ? "memory-insight-bubble z-[3] flex flex-col items-center justify-start bg-transparent p-0 text-center shadow-none ring-0"
           : kind === "more"
-            ? "flex items-center justify-center rounded-full border px-3 py-2 text-center"
-            : "flex flex-col rounded-[1.35rem] p-3",
+            ? "z-[2] flex items-center justify-center rounded-full border px-3 py-2 text-center"
+            : "z-[2] flex flex-col rounded-[1.35rem] p-3",
         draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
         kindStyles[kind],
         muted ? "opacity-45 saturate-50" : "",
@@ -483,20 +517,22 @@ function InsightNodeButton({
         <>
           <span
             className={cn(
-              "memory-insight-bubble-core",
-              active ? "memory-insight-bubble-core-paused" : "",
+              "memory-insight-bubble-motion",
+              active ? "memory-insight-bubble-motion-paused" : "",
             )}
             style={{
               width: diameter,
               height: diameter,
-              ...(active ? undefined : driftStyle),
+              ...(driftStyle ?? {}),
             }}
           >
-            <span className="memory-insight-bubble-halo absolute inset-[-16px] rounded-full" />
-            <span className="memory-insight-bubble-shell absolute inset-0 rounded-full" />
-            <span
-              className="memory-insight-bubble-visual absolute inset-[3px] rounded-full"
-            />
+            <span className="memory-insight-bubble-core">
+              <span className="memory-insight-bubble-halo absolute inset-[-16px] rounded-full" />
+              <span className="memory-insight-bubble-shell absolute inset-0 rounded-full" />
+              <span
+                className="memory-insight-bubble-visual absolute inset-[3px] rounded-full"
+              />
+            </span>
           </span>
           <span className="memory-insight-bubble-label mt-2 block w-full px-1">
             <span className="line-clamp-2 block text-[12px] font-semibold leading-tight tracking-[-0.02em] text-foreground">
@@ -933,9 +969,7 @@ function MemoryInsightCanvas({
           id: tag.id,
           kind: "tag",
           label: tag.label,
-          subtitle: tag.origin === "derived"
-            ? t("memory_insight.derived_tag_subtitle")
-            : t("memory_insight.tag_subtitle"),
+          subtitle: t("memory_insight.tag_subtitle"),
           count: tag.count,
           width: dimensions.width,
           height: dimensions.height,
@@ -1188,7 +1222,7 @@ function MemoryInsightCanvas({
   const canvasNodes = useMemo(() => {
     const positionedNodes: PositionedNode[] = [];
 
-    poolCards.forEach((card, index) => {
+    poolCards.forEach((card) => {
       const bubbleSize = nodeDimensions("card", card.count, compact, maxCardCount);
       const diameter = bubbleDiameter(card.count, maxCardCount, compact);
       const localPosition = poolLayout.positions[card.id] ?? { x: 0, y: 0 };
@@ -1204,7 +1238,7 @@ function MemoryInsightCanvas({
         diameter,
         bubbleColor: bubbleToneColor(card.category),
         draggable: true,
-        driftStyle: draggingNodeId === card.id ? undefined : createBubbleDriftStyle(card.id, index),
+        driftStyle: draggingNodeId === card.id ? undefined : createBubbleMotionStyle(card.id),
         position: {
           x: rootRegionOffsetX + localPosition.x,
           y: localPosition.y,
@@ -1363,12 +1397,14 @@ function MemoryInsightCanvas({
         if (!sourceCard || !targetCard) {
           return null;
         }
+        const sourceBubbleSize = nodeDimensions("card", sourceCard.count, compact, maxCardCount);
+        const targetBubbleSize = nodeDimensions("card", targetCard.count, compact, maxCardCount);
         const sourceDiameter = bubbleDiameter(sourceCard.count, maxCardCount, compact);
         const targetDiameter = bubbleDiameter(targetCard.count, maxCardCount, compact);
         const intensity = Math.min(edge.strength / Math.max(maxStrength, 1), 1);
-        const sourceX = rootRegionOffsetX + sourcePosition.x + sourceDiameter / 2;
+        const sourceX = rootRegionOffsetX + sourcePosition.x + sourceBubbleSize.width / 2;
         const sourceY = sourcePosition.y + sourceDiameter / 2;
-        const targetX = rootRegionOffsetX + targetPosition.x + targetDiameter / 2;
+        const targetX = rootRegionOffsetX + targetPosition.x + targetBubbleSize.width / 2;
         const targetY = targetPosition.y + targetDiameter / 2;
 
         return {
@@ -1517,7 +1553,7 @@ function MemoryInsightCanvas({
               {rootRelationEdges.length > 0 ? (
                 <svg
                   aria-hidden
-                  className="pointer-events-none absolute inset-0 z-[1]"
+                  className="pointer-events-none absolute inset-0 z-0"
                   width={canvasBounds.width}
                   height={canvasBounds.height}
                   viewBox={`0 0 ${canvasBounds.width} ${canvasBounds.height}`}
@@ -1539,7 +1575,7 @@ function MemoryInsightCanvas({
                 </svg>
               ) : null}
 
-              {canvasNodes.map((node, index) => {
+              {canvasNodes.map((node) => {
                 const isRootBubble = node.kind === "card" && !expandedCardSet.has(node.id);
                 const diameter = node.diameter ?? node.width;
 
@@ -1556,7 +1592,7 @@ function MemoryInsightCanvas({
                     diameter={node.diameter}
                     bubbleColor={node.bubbleColor}
                     driftStyle={isRootBubble && draggingNodeId !== node.id
-                      ? node.driftStyle ?? createBubbleDriftStyle(node.id, index)
+                      ? node.driftStyle ?? createBubbleMotionStyle(node.id)
                       : undefined}
                     muted={node.muted}
                     draggable={node.draggable}

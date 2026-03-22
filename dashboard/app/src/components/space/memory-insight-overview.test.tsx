@@ -133,8 +133,78 @@ describe("MemoryInsightOverview", () => {
     const lefts = ["project", "profile", "plan", "policy"]
       .map((id) => screen.getByTestId(`insight-node-card:${id}`).style.left)
       .map((value) => Number.parseFloat(value));
+    const tops = ["project", "profile", "plan", "policy"]
+      .map((id) => screen.getByTestId(`insight-node-card:${id}`).style.top)
+      .map((value) => Number.parseFloat(value));
 
     expect(Math.max(...lefts) - Math.min(...lefts)).toBeGreaterThan(160);
+    expect(Math.max(...tops) - Math.min(...tops)).toBeGreaterThan(60);
+  });
+
+  it("keeps root bubble motion variables stable across card reorder and twinkle independent per bubble", () => {
+    const memories = [
+      createMemory("project-1", "Project memory", ["project"]),
+      createMemory("profile-1", "Profile memory", ["profile"]),
+    ];
+    const matchMap = new Map<string, MemoryAnalysisMatch>([
+      ["project-1", { memoryId: "project-1", categories: ["project"], categoryScores: { project: 1 } }],
+      ["profile-1", { memoryId: "profile-1", categories: ["profile"], categoryScores: { profile: 1 } }],
+    ]);
+
+    const view = renderInsight({
+      cards: [
+        { category: "project", count: 1, confidence: 1 },
+        { category: "profile", count: 1, confidence: 1 },
+      ],
+      memories,
+      matchMap,
+    });
+
+    const projectMotionBefore = screen
+      .getByTestId("insight-node-card:project")
+      .querySelector<HTMLElement>(".memory-insight-bubble-motion");
+    const profileMotionBefore = screen
+      .getByTestId("insight-node-card:profile")
+      .querySelector<HTMLElement>(".memory-insight-bubble-motion");
+
+    expect(projectMotionBefore).not.toBeNull();
+    expect(profileMotionBefore).not.toBeNull();
+
+    const projectDurationBefore = projectMotionBefore!.style.getPropertyValue("--insight-drift-duration");
+    const projectDelayBefore = projectMotionBefore!.style.getPropertyValue("--insight-drift-delay");
+    const projectTwinkleBefore = projectMotionBefore!.style.getPropertyValue("--insight-twinkle-duration");
+    const profileTwinkleBefore = profileMotionBefore!.style.getPropertyValue("--insight-twinkle-duration");
+
+    expect(projectTwinkleBefore).not.toBe(profileTwinkleBefore);
+
+    view.rerender(
+      <MemoryInsightOverview
+        cards={[
+          { category: "profile", count: 1, confidence: 1 },
+          { category: "project", count: 1, confidence: 1 },
+        ]}
+        memories={memories}
+        matchMap={matchMap}
+        compact={false}
+        resetToken={0}
+        onMemorySelect={() => {}}
+      />,
+    );
+
+    const projectMotionAfter = screen
+      .getByTestId("insight-node-card:project")
+      .querySelector<HTMLElement>(".memory-insight-bubble-motion");
+
+    expect(projectMotionAfter).not.toBeNull();
+    expect(
+      projectMotionAfter!.style.getPropertyValue("--insight-drift-duration"),
+    ).toBe(projectDurationBefore);
+    expect(
+      projectMotionAfter!.style.getPropertyValue("--insight-drift-delay"),
+    ).toBe(projectDelayBefore);
+    expect(
+      projectMotionAfter!.style.getPropertyValue("--insight-twinkle-duration"),
+    ).toBe(projectTwinkleBefore);
   });
 
   it("renders the top-right controls on one row in Fullscreen / Reset layout / Fit view order", () => {
@@ -159,6 +229,36 @@ describe("MemoryInsightOverview", () => {
         .getAllByRole("button")
         .map((button) => button.textContent?.trim()),
     ).toEqual(["Fullscreen", "Reset layout", "Fit view"]);
+  });
+
+  it("makes low-memory bubbles much smaller than dominant categories", () => {
+    const memories = [
+      createMemory("artifact-1", "Artifact memory", ["artifact"]),
+      createMemory("experience-1", "Experience memory", ["experience"]),
+    ];
+    const matchMap = new Map<string, MemoryAnalysisMatch>([
+      ["artifact-1", { memoryId: "artifact-1", categories: ["artifact"], categoryScores: { artifact: 1 } }],
+      ["experience-1", { memoryId: "experience-1", categories: ["experience"], categoryScores: { experience: 1 } }],
+    ]);
+
+    renderInsight({
+      cards: [
+        { category: "artifact", count: 1221, confidence: 1 },
+        { category: "experience", count: 155, confidence: 1 },
+      ],
+      memories,
+      matchMap,
+    });
+
+    const artifactDiameter = Number.parseFloat(
+      screen.getByTestId("insight-node-card:artifact").dataset.bubbleDiameter ?? "0",
+    );
+    const experienceDiameter = Number.parseFloat(
+      screen.getByTestId("insight-node-card:experience").dataset.bubbleDiameter ?? "0",
+    );
+
+    expect(artifactDiameter / experienceDiameter).toBeGreaterThan(3);
+    expect((artifactDiameter * artifactDiameter) / (experienceDiameter * experienceDiameter)).toBeGreaterThan(9);
   });
 
   it("walks a lane from card to tag to entity to memory and only memory opens detail", async () => {
